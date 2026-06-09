@@ -29,10 +29,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - name: install system deps (Linux)
-        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libgtk-3-dev
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # tray crate excluded on Linux — muda/tray-icon have no Linux platform impl
+      - run: cargo clippy --workspace --all-targets --exclude agentline-tray -- -D warnings
 
   test:
     name: test (${{ matrix.os }})
@@ -44,9 +43,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: install system deps (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libgtk-3-dev
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace --all-targets
-      - run: cargo test --workspace
+      - name: build & test (Linux, exclude tray)
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --workspace --all-targets --exclude agentline-tray
+          cargo test --workspace --exclude agentline-tray
+      - name: build & test
+        if: runner.os != 'Linux'
+        run: |
+          cargo build --workspace --all-targets
+          cargo test --workspace
