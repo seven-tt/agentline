@@ -4,8 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-const TOKEN_URL: &str =
-    "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal/";
+const TOKEN_URL: &str = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal/";
 
 /// Refresh interval: 1.5 hours (token TTL is 2h).
 const REFRESH_INTERVAL: Duration = Duration::from_secs(90 * 60);

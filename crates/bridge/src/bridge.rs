@@ -3,13 +3,10 @@ use crate::commands::{self, Command};
 use crate::error::Result;
 use crate::im::ImChannel;
 use crate::permission::{
-    AutoApprove, AutoApproveReason, PendingPerm, PermResponse, PermissionDecision,
-    PermissionPolicy,
+    AutoApprove, AutoApproveReason, PendingPerm, PermResponse, PermissionDecision, PermissionPolicy,
 };
 use crate::registry::{ImSnapshot, SessionRegistry, SessionSnapshot};
-use crate::state::{
-    ActiveSession, BridgeState, PendingElicit, PendingSelection, SelectionAction,
-};
+use crate::state::{ActiveSession, BridgeState, PendingElicit, PendingSelection, SelectionAction};
 use crate::types::{
     AgentUpdate, ElicitField, ElicitFieldType, InboundMessage, MessageEvent, MessageKind, PeerRef,
     Project, SessionId, ToolKind,
@@ -29,7 +26,6 @@ impl Drop for AbortOnDrop {
         self.0.abort();
     }
 }
-
 
 #[derive(Debug, Clone)]
 pub struct BridgeConfig {
@@ -114,7 +110,10 @@ impl Bridge {
         // Build a text representation from any message kind (text, image, voice, file, video).
         let text = match &msg.kind {
             MessageKind::Text { text } => text.clone(),
-            MessageKind::Image { local_path, caption } => {
+            MessageKind::Image {
+                local_path,
+                caption,
+            } => {
                 let mut parts = Vec::new();
                 if let Some(path) = local_path {
                     parts.push(format!("![image]({})", path.display()));
@@ -128,18 +127,22 @@ impl Bridge {
                 }
                 parts.join("\n")
             }
-            MessageKind::Voice { transcript, local_path } => {
-                transcript.clone().unwrap_or_else(|| {
-                    local_path
-                        .as_ref()
-                        .map(|p| format!("[voice]({})", p.display()))
-                        .unwrap_or_default()
-                })
-            }
+            MessageKind::Voice {
+                transcript,
+                local_path,
+            } => transcript.clone().unwrap_or_else(|| {
+                local_path
+                    .as_ref()
+                    .map(|p| format!("[voice]({})", p.display()))
+                    .unwrap_or_default()
+            }),
             MessageKind::File { local_path, name } => {
                 format!("[file: {}]({})", name, local_path.display())
             }
-            MessageKind::Video { local_path, caption } => {
+            MessageKind::Video {
+                local_path,
+                caption,
+            } => {
                 let mut parts = Vec::new();
                 if let Some(path) = local_path {
                     parts.push(format!("[video]({})", path.display()));
@@ -199,7 +202,8 @@ impl Bridge {
                     a.perm.clear_grants();
                     let tag = a.tag();
                     drop(s);
-                    self.send(&msg.peer, &t!("bridge.yolo_off", tag = tag)).await?;
+                    self.send(&msg.peer, &t!("bridge.yolo_off", tag = tag))
+                        .await?;
                 } else {
                     drop(s);
                     self.send(&msg.peer, &t!("bridge.safe_mode")).await?;
@@ -222,11 +226,11 @@ impl Bridge {
                 }
 
                 // NoToken also cancels a pending selection.
-                if matches!(cmd, Command::NoToken) {
-                    if self.state.lock().await.pending_selection.take().is_some() {
-                        self.send(&msg.peer, &t!("bridge.cancelled")).await?;
-                        return Ok(());
-                    }
+                if matches!(cmd, Command::NoToken)
+                    && self.state.lock().await.pending_selection.take().is_some()
+                {
+                    self.send(&msg.peer, &t!("bridge.cancelled")).await?;
+                    return Ok(());
                 }
 
                 // Then check pending permission.
@@ -244,7 +248,8 @@ impl Bridge {
                     if matches!(effective_resp, PermResponse::Session) {
                         let mut s = self.state.lock().await;
                         if let Some(a) = s.current.as_mut() {
-                            a.perm.apply_response(pp.tool_kind, effective_resp, &pp.what);
+                            a.perm
+                                .apply_response(pp.tool_kind, effective_resp, &pp.what);
                         }
                     }
                     let _ = pp.responder.send(effective_resp);
@@ -343,9 +348,19 @@ impl Bridge {
         dirs.sort();
 
         if dirs.is_empty() {
-            let tag = self.state.lock().await.current.as_ref().map(|a| a.tag()).unwrap_or_default();
-            self.send(peer, &t!("bridge.no_subdirs", tag = tag, cwd = cwd.display()))
-                .await?;
+            let tag = self
+                .state
+                .lock()
+                .await
+                .current
+                .as_ref()
+                .map(|a| a.tag())
+                .unwrap_or_default();
+            self.send(
+                peer,
+                &t!("bridge.no_subdirs", tag = tag, cwd = cwd.display()),
+            )
+            .await?;
             return Ok(());
         }
 
@@ -359,13 +374,22 @@ impl Bridge {
         self.state.lock().await.pending_selection = Some(PendingSelection {
             peer: peer.clone(),
             action: SelectionAction::Cd,
-            choices: dirs.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+            choices: dirs
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
         });
         Ok(())
     }
 
     async fn handle_new(&self, peer: &PeerRef) -> Result<()> {
-        let sid = self.state.lock().await.current.as_ref().map(|a| a.session_id.clone());
+        let sid = self
+            .state
+            .lock()
+            .await
+            .current
+            .as_ref()
+            .map(|a| a.session_id.clone());
         if let Some(ref sid) = sid {
             self.stop_current_prompt(sid).await;
         }
@@ -396,7 +420,8 @@ impl Bridge {
                 return self.do_stop(peer, &sid, &tag).await;
             }
             drop(s);
-            self.send(peer, &t!("bridge.session_not_found", id = id)).await?;
+            self.send(peer, &t!("bridge.session_not_found", id = id))
+                .await?;
             return Ok(());
         }
 
@@ -412,10 +437,7 @@ impl Bridge {
                 let sid_str = a.session_id.as_str().to_string();
                 let cwd = a.cwd.display().to_string();
                 drop(s);
-                let prompt = format!(
-                    "{}",
-                    t!("bridge.stop_confirm", tag = tag, cwd = cwd)
-                );
+                let prompt = format!("{}", t!("bridge.stop_confirm", tag = tag, cwd = cwd));
                 self.send(peer, &prompt).await?;
                 self.state.lock().await.pending_selection = Some(PendingSelection {
                     peer: peer.clone(),
@@ -438,7 +460,8 @@ impl Bridge {
 
     async fn do_stop(&self, peer: &PeerRef, sid: &SessionId, tag: &str) -> Result<()> {
         self.stop_current_prompt(sid).await;
-        self.send(peer, &t!("bridge.stop_signal_sent", tag = tag)).await?;
+        self.send(peer, &t!("bridge.stop_signal_sent", tag = tag))
+            .await?;
         Ok(())
     }
 
@@ -452,16 +475,14 @@ impl Bridge {
         if n == 0 {
             let len = sel.choices.len();
             self.state.lock().await.pending_selection = Some(sel);
-            self.send(peer, &t!("bridge.reply_range", len = len)).await?;
+            self.send(peer, &t!("bridge.reply_range", len = len))
+                .await?;
             return Ok(());
         }
         if n > sel.choices.len() {
             let len = sel.choices.len();
-            self.send(
-                peer,
-                &t!("bridge.invalid_number", n = n, len = len),
-            )
-            .await?;
+            self.send(peer, &t!("bridge.invalid_number", n = n, len = len))
+                .await?;
             // Put the selection back so user can try again.
             self.state.lock().await.pending_selection = Some(sel);
             return Ok(());
@@ -538,11 +559,7 @@ impl Bridge {
         // Only notify if this is a subsequent message and a session already exists.
         if !was_empty {
             if let Some(tag) = self.state.lock().await.current.as_ref().map(|a| a.tag()) {
-                self.send(
-                    &peer,
-                    &t!("bridge.queued", tag = tag),
-                )
-                .await?;
+                self.send(&peer, &t!("bridge.queued", tag = tag)).await?;
             }
         }
 
@@ -693,6 +710,7 @@ async fn ensure_session_static(
 }
 
 /// Dequeue the next pending prompt and start a task if the current one is idle.
+#[allow(clippy::manual_async_fn)]
 fn start_next_if_idle(
     start_next_lock: Arc<Mutex<()>>,
     prompt_task: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -702,87 +720,97 @@ fn start_next_if_idle(
     cfg: BridgeConfig,
 ) -> impl std::future::Future<Output = Result<()>> + Send {
     async move {
-    // Only one caller may dequeue + spawn at a time.
-    let _guard = start_next_lock.lock().await;
+        // Only one caller may dequeue + spawn at a time.
+        let _guard = start_next_lock.lock().await;
 
-    // If a task is still running, let it call us back when it finishes.
-    {
-        let guard = prompt_task.lock().await;
-        if guard.as_ref().map(|h| !h.is_finished()).unwrap_or(false) {
-            return Ok(());
+        // If a task is still running, let it call us back when it finishes.
+        {
+            let guard = prompt_task.lock().await;
+            if guard.as_ref().map(|h| !h.is_finished()).unwrap_or(false) {
+                return Ok(());
+            }
         }
-    }
-    *prompt_task.lock().await = None;
+        *prompt_task.lock().await = None;
 
-    // Dequeue next message.
-    let (peer, text) = {
-        let mut s = state.lock().await;
-        match s.pending_prompts.pop_front() {
-            Some(v) => v,
-            None => return Ok(()),
-        }
-    };
+        // Dequeue next message.
+        let (peer, text) = {
+            let mut s = state.lock().await;
+            match s.pending_prompts.pop_front() {
+                Some(v) => v,
+                None => return Ok(()),
+            }
+        };
 
-    let (sid, tag) = ensure_session_static(&state, &agent, &cfg, &peer).await?;
+        let (sid, tag) = ensure_session_static(&state, &agent, &cfg, &peer).await?;
 
-    // Inject project context as a prefix on the very first prompt of a new session.
-    let text = {
-        let mut s = state.lock().await;
-        if !s.project_context_sent {
-            s.project_context_sent = true;
-            if !cfg.projects.is_empty() {
-                let cwd = s.cwd.display().to_string();
-                let mut ctx = String::new();
-                ctx.push_str("Available projects:\n");
-                for (i, p) in cfg.projects.iter().enumerate() {
-                    ctx.push_str(&format!("{}. {} — {}\n", i + 1, p.name, p.git_url));
-                }
-                ctx.push_str(&format!(
-                    "\nWorking directory: {}\n\n\
+        // Inject project context as a prefix on the very first prompt of a new session.
+        let text = {
+            let mut s = state.lock().await;
+            if !s.project_context_sent {
+                s.project_context_sent = true;
+                if !cfg.projects.is_empty() {
+                    let cwd = s.cwd.display().to_string();
+                    let mut ctx = String::new();
+                    ctx.push_str("Available projects:\n");
+                    for (i, p) in cfg.projects.iter().enumerate() {
+                        ctx.push_str(&format!("{}. {} — {}\n", i + 1, p.name, p.git_url));
+                    }
+                    ctx.push_str(&format!(
+                        "\nWorking directory: {}\n\n\
                     The git repositories above are available if needed. \
                     Clone them on demand when the user asks to work on a project. \
                     Do not clone unless requested.\n\
                     ---\n\n{}",
-                    cwd, text
-                ));
-                ctx
+                        cwd, text
+                    ));
+                    ctx
+                } else {
+                    text
+                }
             } else {
                 text
             }
-        } else {
-            text
-        }
-    };
+        };
 
-    let peer_t = peer.clone();
-    let sid_t = sid.clone();
-    let pt_c = prompt_task.clone();
-    let state_c = state.clone();
-    let agent_c = agent.clone();
-    let im_c = im.clone();
-    let cfg_c = cfg.clone();
-    let snl_c = start_next_lock.clone();
+        let peer_t = peer.clone();
+        let sid_t = sid.clone();
+        let pt_c = prompt_task.clone();
+        let state_c = state.clone();
+        let agent_c = agent.clone();
+        let im_c = im.clone();
+        let cfg_c = cfg.clone();
+        let snl_c = start_next_lock.clone();
 
-    let handle = tokio::spawn(async move {
-        if let Err(e) =
-            run_prompt_task(im_c.clone(), agent_c.clone(), state_c.clone(), cfg_c.clone(), peer_t.clone(), sid_t, tag, text).await
-        {
-            tracing::error!(error=%e, "prompt task failed");
-            state_c.lock().await.current = None;
-            let _ = im_c
-                .send_event(&peer_t, &MessageEvent::Error(e.to_string()))
-                .await;
-        }
-        // Mark ourselves as finished so start_next_if_idle can dequeue the next message.
-        let _ = pt_c.lock().await.take();
-        let _ = start_next_if_idle(snl_c, pt_c, state_c, agent_c, im_c, cfg_c).await;
-    });
+        let handle = tokio::spawn(async move {
+            if let Err(e) = run_prompt_task(
+                im_c.clone(),
+                agent_c.clone(),
+                state_c.clone(),
+                cfg_c.clone(),
+                peer_t.clone(),
+                sid_t,
+                tag,
+                text,
+            )
+            .await
+            {
+                tracing::error!(error=%e, "prompt task failed");
+                state_c.lock().await.current = None;
+                let _ = im_c
+                    .send_event(&peer_t, &MessageEvent::Error(e.to_string()))
+                    .await;
+            }
+            // Mark ourselves as finished so start_next_if_idle can dequeue the next message.
+            let _ = pt_c.lock().await.take();
+            let _ = start_next_if_idle(snl_c, pt_c, state_c, agent_c, im_c, cfg_c).await;
+        });
 
-    *prompt_task.lock().await = Some(handle);
-    Ok(())
+        *prompt_task.lock().await = Some(handle);
+        Ok(())
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_prompt_task(
     im: Arc<dyn ImChannel>,
     agent: Arc<dyn AgentBackend>,
@@ -846,10 +874,21 @@ async fn run_prompt_task(
                     | AgentUpdate::ToolCallProgress { .. }
             ) && !thinking_buf.is_empty()
             {
-                let elapsed = thinking_start.map(|s| s.elapsed().as_secs_f64()).unwrap_or(0.0);
+                let elapsed = thinking_start
+                    .map(|s| s.elapsed().as_secs_f64())
+                    .unwrap_or(0.0);
                 let chars = thinking_buf.chars().count();
-                let summary = t!("bridge.thinking_summary", tag = tag, secs = format!("{:.1}", elapsed), chars = chars).to_string();
-                if let Err(e) = im.send_event(&peer, &MessageEvent::PlainText(summary)).await {
+                let summary = t!(
+                    "bridge.thinking_summary",
+                    tag = tag,
+                    secs = format!("{:.1}", elapsed),
+                    chars = chars
+                )
+                .to_string();
+                if let Err(e) = im
+                    .send_event(&peer, &MessageEvent::PlainText(summary))
+                    .await
+                {
                     tracing::error!(error=%e, "send thinking summary failed");
                 }
                 thinking_buf.clear();
@@ -896,7 +935,12 @@ async fn run_prompt_task(
                     continue;
                 }
 
-                AgentUpdate::PermissionRequest { id, what: raw_what, danger, tool_kind } => {
+                AgentUpdate::PermissionRequest {
+                    id,
+                    what: raw_what,
+                    danger,
+                    tool_kind,
+                } => {
                     let cwd_s = target_cwd.to_string_lossy();
                     let what = raw_what.replace(cwd_s.as_ref(), ".");
 
@@ -942,7 +986,12 @@ async fn run_prompt_task(
                                     tracing::error!(error=%e, "answer_permission failed");
                                 }
                             });
-                            MessageEvent::PermissionRequest { id, what, danger, tag: tag.clone() }
+                            MessageEvent::PermissionRequest {
+                                id,
+                                what,
+                                danger,
+                                tag: tag.clone(),
+                            }
                         }
                     }
                 }
@@ -957,21 +1006,18 @@ async fn run_prompt_task(
                         schema: schema.clone(),
                     });
                     // Emit the structured event — IM layer decides how to render.
-                    if let Err(e) =
-                        im.send_event(&peer, &MessageEvent::ElicitInput {
-                            id,
-                            prompt,
-                            schema,
-                        }).await
+                    if let Err(e) = im
+                        .send_event(&peer, &MessageEvent::ElicitInput { id, prompt, schema })
+                        .await
                     {
                         tracing::error!(error=%e, "send elicit question failed");
                     }
                     continue;
                 }
 
-                AgentUpdate::ModeChanged { mode_id } => {
-                    MessageEvent::PlainText(t!("bridge.mode_changed", tag = tag, mode = mode_id).to_string())
-                }
+                AgentUpdate::ModeChanged { mode_id } => MessageEvent::PlainText(
+                    t!("bridge.mode_changed", tag = tag, mode = mode_id).to_string(),
+                ),
 
                 AgentUpdate::SessionInfo { title } => {
                     MessageEvent::PlainText(format!("📋 {tag} {title}"))
@@ -1019,9 +1065,10 @@ async fn run_prompt_task(
                     }
                     continue;
                 }
-                AgentUpdate::ToolCallProgress { id, output_chunk } => {
-                    MessageEvent::ToolProgress { id, output: output_chunk }
-                }
+                AgentUpdate::ToolCallProgress { id, output_chunk } => MessageEvent::ToolProgress {
+                    id,
+                    output: output_chunk,
+                },
                 AgentUpdate::ToolCallEnd { id, ok, summary } => {
                     // Name the completed tool by its remembered kind + arg. The
                     // entry is removed so a duplicate completion (the agent may
@@ -1033,7 +1080,8 @@ async fn run_prompt_task(
                                 AutoApprove::Yolo => " · yolo授权",
                                 AutoApprove::No => "",
                             };
-                            let mut text = format!("{tag} {}{suffix}", crate::format::tool_label(k, &l));
+                            let mut text =
+                                format!("{tag} {}{suffix}", crate::format::tool_label(k, &l));
                             // On failure, append the tool's own error output.
                             if !ok {
                                 if let Some(err) = summary.filter(|s| !s.is_empty()) {
@@ -1041,18 +1089,24 @@ async fn run_prompt_task(
                                     text.push_str(&crate::format::truncate(&err, 800));
                                 }
                             }
-                            MessageEvent::ToolEnd { id, ok, summary: Some(text) }
+                            MessageEvent::ToolEnd {
+                                id,
+                                ok,
+                                summary: Some(text),
+                            }
                         }
                         None => match summary {
-                            Some(s) => MessageEvent::ToolEnd { id, ok, summary: Some(s) },
+                            Some(s) => MessageEvent::ToolEnd {
+                                id,
+                                ok,
+                                summary: Some(s),
+                            },
                             None => continue, // already reported, or never started
                         },
                     }
                 }
                 AgentUpdate::Plan { steps } => MessageEvent::Plan { steps },
-                AgentUpdate::Error(msg) => {
-                    MessageEvent::Error(format!("{tag} {msg}"))
-                }
+                AgentUpdate::Error(msg) => MessageEvent::Error(format!("{tag} {msg}")),
             };
             if let Err(e) = im.send_event(&peer, &event).await {
                 tracing::error!(error=%e, "send_event failed");

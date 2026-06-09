@@ -40,11 +40,8 @@ pub enum AutoApprove {
 // ── Shell blacklist ──────────────────────────────────────────────────
 
 const SHELL_BLACKLIST: &[&str] = &[
-    "rm", "mv", "dd", "shred",
-    "chmod", "chown",
-    "kill", "pkill", "killall",
-    "reboot", "shutdown", "halt",
-    "curl", "wget", "nc", "ssh",
+    "rm", "mv", "dd", "shred", "chmod", "chown", "kill", "pkill", "killall", "reboot", "shutdown",
+    "halt", "curl", "wget", "nc", "ssh",
 ];
 
 fn is_blacklisted(cmd: &str) -> bool {
@@ -69,6 +66,12 @@ pub enum PermissionDecision {
 pub enum AutoApproveReason {
     Yolo,
     SessionGrant,
+}
+
+impl Default for PermissionPolicy {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PermissionPolicy {

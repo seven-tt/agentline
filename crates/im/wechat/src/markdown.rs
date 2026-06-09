@@ -76,7 +76,11 @@ impl StreamingMarkdownFilter {
                 out.push_str(&self.pump_body(eof));
             }
 
-            if self.buf.len() == s_len && self.sol == s_sol && self.fence == s_fence && self.inl == s_inl {
+            if self.buf.len() == s_len
+                && self.sol == s_sol
+                && self.fence == s_fence
+                && self.inl == s_inl
+            {
                 break;
             }
         }
@@ -167,10 +171,10 @@ impl StreamingMarkdownFilter {
 
         if self.buf.starts_with('#') {
             let n = self.buf.chars().take_while(|&c| c == '#').count();
-            if n >= 5 && n <= 6 {
+            if (5..=6).contains(&n) {
                 if let Some(rest) = self.buf.get(n..) {
-                    if rest.starts_with(' ') {
-                        self.buf = rest[1..].to_string();
+                    if let Some(stripped) = rest.strip_prefix(' ') {
+                        self.buf = stripped.to_string();
                         self.sol = false;
                         return String::new();
                     }
@@ -233,26 +237,27 @@ impl StreamingMarkdownFilter {
                 self.sol = true;
                 return out;
             }
-            if c == '!' {
-                if idx + 1 < chars.len() && chars[idx + 1].1 == '[' {
-                    out.push_str(&self.buf.drain(..bp).collect::<String>());
-                    self.buf.drain(..2); // remove "!["
-                    self.inl = Some(InlineState { ty: InlineType::Image, acc: String::new() });
-                    return out;
-                }
+            if c == '!' && idx + 1 < chars.len() && chars[idx + 1].1 == '[' {
+                out.push_str(&self.buf.drain(..bp).collect::<String>());
+                self.buf.drain(..2); // remove "!["
+                self.inl = Some(InlineState {
+                    ty: InlineType::Image,
+                    acc: String::new(),
+                });
+                return out;
             }
             if c == '~' {
                 idx += 1;
                 continue;
             }
             if c == '*' {
-                if idx + 2 < chars.len()
-                    && chars[idx + 1].1 == '*'
-                    && chars[idx + 2].1 == '*'
-                {
+                if idx + 2 < chars.len() && chars[idx + 1].1 == '*' && chars[idx + 2].1 == '*' {
                     out.push_str(&self.buf.drain(..bp).collect::<String>());
                     self.buf.drain(..3);
-                    self.inl = Some(InlineState { ty: InlineType::Bold3, acc: String::new() });
+                    self.inl = Some(InlineState {
+                        ty: InlineType::Bold3,
+                        acc: String::new(),
+                    });
                     return out;
                 }
                 if idx + 1 < chars.len() && chars[idx + 1].1 == '*' {
@@ -264,7 +269,10 @@ impl StreamingMarkdownFilter {
                     if next_c != ' ' && next_c != '\n' {
                         out.push_str(&self.buf.drain(..bp).collect::<String>());
                         self.buf.remove(0); // remove '*'
-                        self.inl = Some(InlineState { ty: InlineType::Italic, acc: String::new() });
+                        self.inl = Some(InlineState {
+                            ty: InlineType::Italic,
+                            acc: String::new(),
+                        });
                         return out;
                     }
                 }
@@ -272,13 +280,13 @@ impl StreamingMarkdownFilter {
                 continue;
             }
             if c == '_' {
-                if idx + 2 < chars.len()
-                    && chars[idx + 1].1 == '_'
-                    && chars[idx + 2].1 == '_'
-                {
+                if idx + 2 < chars.len() && chars[idx + 1].1 == '_' && chars[idx + 2].1 == '_' {
                     out.push_str(&self.buf.drain(..bp).collect::<String>());
                     self.buf.drain(..3);
-                    self.inl = Some(InlineState { ty: InlineType::Ubold3, acc: String::new() });
+                    self.inl = Some(InlineState {
+                        ty: InlineType::Ubold3,
+                        acc: String::new(),
+                    });
                     return out;
                 }
                 if idx + 1 < chars.len() && chars[idx + 1].1 == '_' {
@@ -290,7 +298,10 @@ impl StreamingMarkdownFilter {
                     if next_c != ' ' && next_c != '\n' {
                         out.push_str(&self.buf.drain(..bp).collect::<String>());
                         self.buf.remove(0); // remove '_'
-                        self.inl = Some(InlineState { ty: InlineType::Uitalic, acc: String::new() });
+                        self.inl = Some(InlineState {
+                            ty: InlineType::Uitalic,
+                            acc: String::new(),
+                        });
                         return out;
                     }
                 }
@@ -302,20 +313,19 @@ impl StreamingMarkdownFilter {
 
         let mut hold = 0;
         if !eof {
-            if self.buf.ends_with("**") {
+            if self.buf.ends_with("**") || self.buf.ends_with("__") {
                 hold = 2;
-            } else if self.buf.ends_with("__") {
-                hold = 2;
-            } else if self.buf.ends_with('*') {
-                hold = 1;
-            } else if self.buf.ends_with('_') {
-                hold = 1;
-            } else if self.buf.ends_with('!') {
+            } else if self.buf.ends_with('*') || self.buf.ends_with('_') || self.buf.ends_with('!')
+            {
                 hold = 1;
             }
         }
         out.push_str(&self.buf[..self.buf.len().saturating_sub(hold)]);
-        self.buf = if hold > 0 { self.buf[self.buf.len() - hold..].to_string() } else { String::new() };
+        self.buf = if hold > 0 {
+            self.buf[self.buf.len() - hold..].to_string()
+        } else {
+            String::new()
+        };
         out
     }
 

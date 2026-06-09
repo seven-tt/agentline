@@ -107,8 +107,9 @@ impl AcpBackend {
         let (cmd_tx, cmd_rx) = mpsc::channel::<AcpCmd>(32);
         let pending_perms: Arc<tokio::sync::Mutex<HashMap<String, oneshot::Sender<bool>>>> =
             Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-        let pending_elicits: Arc<tokio::sync::Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>> =
-            Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let pending_elicits: Arc<
+            tokio::sync::Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>,
+        > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let pending_perms_for_bg = pending_perms.clone();
         let pending_elicits_for_bg = pending_elicits.clone();
         let child_pgid = Arc::new(std::sync::atomic::AtomicI32::new(0));
@@ -251,7 +252,11 @@ impl AgentBackend for AcpBackend {
             .map_err(|e| CoreError::agent(e.to_string()))
     }
 
-    async fn answer_elicitation(&self, elicit_id: &str, response: serde_json::Value) -> CoreResult<()> {
+    async fn answer_elicitation(
+        &self,
+        elicit_id: &str,
+        response: serde_json::Value,
+    ) -> CoreResult<()> {
         let pending = self.pending_elicits.lock().await.remove(elicit_id);
         match pending {
             Some(tx) => {
@@ -314,7 +319,6 @@ fn spawn_agent(cfg: &AcpBackendConfig) -> Result<tokio::process::Child> {
     cmd.spawn()
         .map_err(|e| Error::other(format!("spawn `{}`: {e}", cfg.command)))
 }
-
 
 async fn bridge_main(
     cfg: AcpBackendConfig,
@@ -544,10 +548,7 @@ mod proxy_env_tests {
 
     /// Run a shell command through the real `spawn_agent` path and return its stdout.
     async fn spawn_and_capture(shell_cmd: &str) -> String {
-        let cfg = AcpBackendConfig::new(
-            "/bin/sh",
-            vec!["-c".into(), shell_cmd.into()],
-        );
+        let cfg = AcpBackendConfig::new("/bin/sh", vec!["-c".into(), shell_cmd.into()]);
         let mut child = spawn_agent(&cfg).expect("spawn child");
         let mut out = String::new();
         child
@@ -594,10 +595,8 @@ mod proxy_env_tests {
 
         // sh stays in the foreground `sleep`, with another `sleep` backgrounded —
         // both land in the new group/session created by `setsid` in `spawn_agent`.
-        let cfg = AcpBackendConfig::new(
-            "/bin/sh",
-            vec!["-c".into(), "sleep 300 & sleep 300".into()],
-        );
+        let cfg =
+            AcpBackendConfig::new("/bin/sh", vec!["-c".into(), "sleep 300 & sleep 300".into()]);
         let mut child = spawn_agent(&cfg).expect("spawn");
         let pid = child.id().expect("child pid") as i32;
 
@@ -630,10 +629,8 @@ mod proxy_env_tests {
     async fn kills_whole_session() {
         use std::time::Duration;
 
-        let cfg = AcpBackendConfig::new(
-            "/bin/sh",
-            vec!["-c".into(), "sleep 300 & sleep 300".into()],
-        );
+        let cfg =
+            AcpBackendConfig::new("/bin/sh", vec!["-c".into(), "sleep 300 & sleep 300".into()]);
         let mut child = spawn_agent(&cfg).expect("spawn");
         let pid = child.id().expect("child pid") as i32;
 

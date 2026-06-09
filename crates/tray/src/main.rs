@@ -166,9 +166,11 @@ fn run_tray() -> Result<()> {
     let poll_child = Arc::clone(&child);
     let poll_restart = Arc::clone(&auto_restart);
     let (state_tx, state_rx) = std::sync::mpsc::channel::<(DaemonState, Option<u32>)>();
-    std::thread::spawn(move || loop {
-        let _ = state_tx.send(check_child_and_maybe_restart(&poll_child, &poll_restart));
-        std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+    std::thread::spawn(move || {
+        loop {
+            let _ = state_tx.send(check_child_and_maybe_restart(&poll_child, &poll_restart));
+            std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+        }
     });
 
     let dashboard_id = dashboard.id().clone();
@@ -248,17 +250,24 @@ fn kill_agent_session(sid: i32) {
     const PROC_ALL_PIDS: u32 = 1;
     unsafe {
         let cap = libc::proc_listpids(PROC_ALL_PIDS, 0, std::ptr::null_mut(), 0);
-        if cap <= 0 { return; }
+        if cap <= 0 {
+            return;
+        }
         let mut pids = vec![0i32; cap as usize / std::mem::size_of::<i32>() + 16];
         let bytes = libc::proc_listpids(
-            PROC_ALL_PIDS, 0,
+            PROC_ALL_PIDS,
+            0,
             pids.as_mut_ptr() as *mut libc::c_void,
             (pids.len() * std::mem::size_of::<i32>()) as i32,
         );
-        if bytes <= 0 { return; }
+        if bytes <= 0 {
+            return;
+        }
         let n = bytes as usize / std::mem::size_of::<i32>();
         for &p in &pids[..n] {
-            if p <= 1 { continue; }
+            if p <= 1 {
+                continue;
+            }
             if libc::getsid(p) == sid {
                 libc::kill(p, libc::SIGTERM);
                 libc::kill(p, libc::SIGKILL);
@@ -293,7 +302,9 @@ fn kill_stale_daemon() {
             return;
         }
         tracing::info!(pid, "killing stale daemon from lock file");
-        unsafe { libc::kill(pid, libc::SIGTERM); }
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             std::thread::sleep(Duration::from_millis(100));
@@ -301,8 +312,13 @@ fn kill_stale_daemon() {
                 break;
             }
             if std::time::Instant::now() >= deadline {
-                tracing::warn!(pid, "stale daemon did not exit after SIGTERM, sending SIGKILL");
-                unsafe { libc::kill(pid, libc::SIGKILL); }
+                tracing::warn!(
+                    pid,
+                    "stale daemon did not exit after SIGTERM, sending SIGKILL"
+                );
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
                 std::thread::sleep(Duration::from_millis(200));
                 break;
             }
@@ -355,11 +371,7 @@ fn enriched_path() -> String {
         vec!["-l", "-c", "echo $PATH"],
     ] {
         for shell in &["/bin/zsh", "/bin/bash"] {
-            if let Ok(out) = Command::new(shell)
-                .args(args)
-                .env("TERM", "dumb")
-                .output()
-            {
+            if let Ok(out) = Command::new(shell).args(args).env("TERM", "dumb").output() {
                 if out.status.success() {
                     let p = String::from_utf8_lossy(&out.stdout)
                         .lines()
@@ -384,9 +396,14 @@ fn enriched_path() -> String {
         .collect();
 
     for c in &[
-        "/opt/homebrew/bin", "/opt/homebrew/sbin",
-        "/usr/local/bin", "/usr/local/sbin",
-        "/usr/bin", "/bin", "/usr/sbin", "/sbin",
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
     ] {
         let s = c.to_string();
         if std::path::Path::new(c).exists() && !paths.contains(&s) {
@@ -447,7 +464,10 @@ impl DaemonState {
     }
 }
 
-fn check_child_and_maybe_restart(handle: &ChildHandle, auto_restart: &Arc<AtomicBool>) -> (DaemonState, Option<u32>) {
+fn check_child_and_maybe_restart(
+    handle: &ChildHandle,
+    auto_restart: &Arc<AtomicBool>,
+) -> (DaemonState, Option<u32>) {
     let exited = {
         let mut guard = handle.lock().unwrap();
         match guard.as_mut() {

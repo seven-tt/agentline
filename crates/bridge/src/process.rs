@@ -108,12 +108,7 @@ pub fn list_child_pids(parent_pid: i32) -> HashSet<i32> {
     let mut children = HashSet::new();
     const PROC_PPID_ONLY: u32 = 6;
     unsafe {
-        let cap = libc::proc_listpids(
-            PROC_PPID_ONLY,
-            parent_pid as u32,
-            std::ptr::null_mut(),
-            0,
-        );
+        let cap = libc::proc_listpids(PROC_PPID_ONLY, parent_pid as u32, std::ptr::null_mut(), 0);
         if cap <= 0 {
             return children;
         }

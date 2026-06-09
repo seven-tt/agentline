@@ -43,11 +43,17 @@ pub async fn wait_for_scan(http: &HttpClient, qr: &QrCode) -> Result<LoginResult
 
     loop {
         if started.elapsed().as_secs() > MAX_POLL_SECS {
-            return Err(Error::Login(format!("login timed out after {MAX_POLL_SECS}s")));
+            return Err(Error::Login(format!(
+                "login timed out after {MAX_POLL_SECS}s"
+            )));
         }
         let path = format!("/ilink/bot/get_qrcode_status?qrcode={}", qr.token);
         let status: QrcodeStatusResp = match http
-            .get_json_with_base(api_base.as_deref(), &path, Some(Duration::from_secs(QR_LONG_POLL_TIMEOUT_SECS)))
+            .get_json_with_base(
+                api_base.as_deref(),
+                &path,
+                Some(Duration::from_secs(QR_LONG_POLL_TIMEOUT_SECS)),
+            )
             .await
         {
             Ok(s) => s,
@@ -82,15 +88,19 @@ pub async fn wait_for_scan(http: &HttpClient, qr: &QrCode) -> Result<LoginResult
                 }
             }
             "binded_redirect" => {
-                return Err(Error::Login("already bound to another OpenClaw instance".into()));
+                return Err(Error::Login(
+                    "already bound to another OpenClaw instance".into(),
+                ));
             }
             "need_verifycode" => {
                 tracing::warn!("need_verifycode not supported in web flow");
             }
             "verify_code_blocked" => {
-                return Err(Error::Login("verify code blocked, please retry later".into()));
+                return Err(Error::Login(
+                    "verify code blocked, please retry later".into(),
+                ));
             }
-            "wait" | _ => {
+            _ => {
                 tracing::debug!(status = %status.status, "qr poll");
             }
         }

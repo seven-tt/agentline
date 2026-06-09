@@ -63,8 +63,13 @@ impl TelegramChannel {
             cfg.api_base.trim_end_matches('/').to_string()
         };
 
-        let (rx, poll_handle) =
-            poll::spawn_poll(http.clone(), api_base.clone(), cfg.bot_token.clone(), cfg.allowed_users, 32);
+        let (rx, poll_handle) = poll::spawn_poll(
+            http.clone(),
+            api_base.clone(),
+            cfg.bot_token.clone(),
+            cfg.allowed_users,
+            32,
+        );
 
         Ok((
             Self {
@@ -133,11 +138,7 @@ impl ImChannel for TelegramChannel {
         Err(agentline_bridge::Error::NotSupported)
     }
 
-    async fn send_event(
-        &self,
-        to: &PeerRef,
-        event: &MessageEvent,
-    ) -> agentline_bridge::Result<()> {
+    async fn send_event(&self, to: &PeerRef, event: &MessageEvent) -> agentline_bridge::Result<()> {
         let peer_id = &to.user_id;
         let chat_id = Self::chat_id_from_peer(to);
 

@@ -168,7 +168,8 @@ fn init_tracing(level: &str) {
 /// with a trailing `…`.
 struct TruncatingFields;
 
-impl<'writer> tracing_subscriber::field::MakeVisitor<tracing_subscriber::fmt::format::Writer<'writer>>
+impl<'writer>
+    tracing_subscriber::field::MakeVisitor<tracing_subscriber::fmt::format::Writer<'writer>>
     for TruncatingFields
 {
     type Visitor = TruncVisitor<'writer>;
@@ -245,7 +246,7 @@ fn sanitize_log_value(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{sanitize_log_value, MAX_LOG_FIELD_CHARS};
+    use super::{MAX_LOG_FIELD_CHARS, sanitize_log_value};
 
     #[test]
     fn collapses_newlines_to_single_line() {

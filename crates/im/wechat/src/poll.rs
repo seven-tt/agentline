@@ -48,7 +48,16 @@ pub fn spawn_poller(
 ) -> (mpsc::Receiver<InboundMessage>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(buffer.max(1));
     let handle = tokio::spawn(async move {
-        run_loop(http, cursor, persist, allowed_users, registry, agent_done, tx).await;
+        run_loop(
+            http,
+            cursor,
+            persist,
+            allowed_users,
+            registry,
+            agent_done,
+            tx,
+        )
+        .await;
     });
     (rx, handle)
 }
@@ -91,18 +100,9 @@ async fn run_loop(
                 }
                 for raw in resp.msgs {
                     // Extract media refs before convert consumes raw.
-                    let image_item = raw
-                        .item_list
-                        .first()
-                        .and_then(|i| i.image_item.clone());
-                    let file_item = raw
-                        .item_list
-                        .first()
-                        .and_then(|i| i.file_item.clone());
-                    let video_item = raw
-                        .item_list
-                        .first()
-                        .and_then(|i| i.video_item.clone());
+                    let image_item = raw.item_list.first().and_then(|i| i.image_item.clone());
+                    let file_item = raw.item_list.first().and_then(|i| i.file_item.clone());
+                    let video_item = raw.item_list.first().and_then(|i| i.video_item.clone());
 
                     if let Some(mut msg) = convert(&raw, &allowed_users) {
                         // Download image / voice / file / video media so the agent can see them.
@@ -110,7 +110,9 @@ async fn run_loop(
                             MessageKind::Image { local_path, .. } => {
                                 if let Some(ref img) = image_item {
                                     let save_dir = media_save_dir();
-                                    if let Some(path) = crate::media::download_image(&http, img, &save_dir).await {
+                                    if let Some(path) =
+                                        crate::media::download_image(&http, img, &save_dir).await
+                                    {
                                         *local_path = Some(path);
                                     }
                                 }
@@ -122,7 +124,9 @@ async fn run_loop(
                             MessageKind::File { local_path, .. } => {
                                 if let Some(ref file) = file_item {
                                     let save_dir = media_save_dir();
-                                    if let Some(path) = crate::media::download_file(&http, file, &save_dir).await {
+                                    if let Some(path) =
+                                        crate::media::download_file(&http, file, &save_dir).await
+                                    {
                                         *local_path = path;
                                     }
                                 }
@@ -130,7 +134,9 @@ async fn run_loop(
                             MessageKind::Video { local_path, .. } => {
                                 if let Some(ref video) = video_item {
                                     let save_dir = media_save_dir();
-                                    if let Some(path) = crate::media::download_video(&http, video, &save_dir).await {
+                                    if let Some(path) =
+                                        crate::media::download_video(&http, video, &save_dir).await
+                                    {
                                         *local_path = Some(path);
                                     }
                                 }

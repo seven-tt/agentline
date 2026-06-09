@@ -1,9 +1,9 @@
-use base64::Engine;
 use crate::error::{Error, Result};
 use crate::http::HttpClient;
 use crate::types::{
     AbortInfo, InitStreamReq, InitStreamResp, PieceItem, SyncStreamReq, SyncStreamResp,
 };
+use base64::Engine;
 use serde::Serialize;
 
 const STREAM_BUSINESS_TYPE: i32 = 10;
@@ -115,7 +115,11 @@ impl WeixinStreamSender {
             end_up_piece_seq: 0,
             abort_info: None,
         };
-        match self.http.post_json::<_, SyncStreamResp>("/ilink/bot/sync_stream", &req).await {
+        match self
+            .http
+            .post_json::<_, SyncStreamResp>("/ilink/bot/sync_stream", &req)
+            .await
+        {
             Ok(resp) => {
                 self.check_abort(&resp)?;
                 let retried = pieces.len().saturating_sub(1);
@@ -143,7 +147,8 @@ impl WeixinStreamSender {
     pub async fn end(&mut self) -> Result<()> {
         self.assert_ready()?;
         self.piece_seq += 1;
-        let final_json = serde_json::json!({ "type": "text", "text": "", "stream_type": "text" }).to_string();
+        let final_json =
+            serde_json::json!({ "type": "text", "text": "", "stream_type": "text" }).to_string();
         let piece_data = base64::engine::general_purpose::STANDARD.encode(final_json);
         let final_piece = PieceItem {
             piece_seq: self.piece_seq,

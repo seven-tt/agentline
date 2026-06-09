@@ -100,9 +100,7 @@ async fn parse_send_response(resp: reqwest::Response) -> Result<i64> {
         .map_err(|e| Error::Parse(format!("sendMessage resp: {e}")))?;
     if !parsed.ok {
         return Err(Error::Api(
-            parsed
-                .description
-                .unwrap_or_else(|| "unknown error".into()),
+            parsed.description.unwrap_or_else(|| "unknown error".into()),
         ));
     }
     Ok(parsed.result.map(|r| r.message_id).unwrap_or(0))

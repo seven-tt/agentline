@@ -45,8 +45,7 @@ const TOKEN_WAIT_POLL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Appended to the message that spends a user's last send slot, prompting them
 /// to top up the budget by sending another message.
-const CONTINUE_HINT: &str =
-    "\n\n—— 本轮消息已达微信单次回复上限，回复「继续」以接收剩余内容 ——";
+const CONTINUE_HINT: &str = "\n\n—— 本轮消息已达微信单次回复上限，回复「继续」以接收剩余内容 ——";
 
 /// Queued, token-bucket-paced sender for discrete text messages.
 ///
@@ -79,7 +78,16 @@ impl SendQueue {
         tokio::spawn(async move {
             let mut last: Option<std::time::Instant> = None;
             while let Some((peer, text)) = rx.recv().await {
-                Self::deliver(&http, &registry, &agent_done, &mut last, interval, peer, text).await;
+                Self::deliver(
+                    &http,
+                    &registry,
+                    &agent_done,
+                    &mut last,
+                    interval,
+                    peer,
+                    text,
+                )
+                .await;
             }
             tracing::debug!("send queue worker stopped");
         });
@@ -101,7 +109,10 @@ impl SendQueue {
         let user = peer.user_id.clone();
         loop {
             match registry.claim(&user) {
-                token::Slot::Grant { token, last: final_slot } => {
+                token::Slot::Grant {
+                    token,
+                    last: final_slot,
+                } => {
                     let target = with_context_token(peer.clone(), &token);
                     let done = agent_done.lock().await.contains(&user);
                     let body = if final_slot && !done {
@@ -256,7 +267,12 @@ impl WechatChannel {
         let registry = TokenRegistry::new(token::MAX_MSGS_PER_CONTEXT, token::TOKEN_MAX_AGE);
         registry.seed(initial_context_tokens);
         let agent_done: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
-        let send_queue = SendQueue::spawn(http.clone(), MIN_SEND_INTERVAL, registry.clone(), agent_done.clone());
+        let send_queue = SendQueue::spawn(
+            http.clone(),
+            MIN_SEND_INTERVAL,
+            registry.clone(),
+            agent_done.clone(),
+        );
         let (rx, handle) = poll::spawn_poller(
             http.clone(),
             cursor.clone(),
@@ -334,7 +350,12 @@ impl WechatChannel {
     /// send queue re-selects the token per message; this only matters for
     /// non-queued paths such as the typing indicator.)
     async fn enrich_peer(&self, peer: &PeerRef) -> PeerRef {
-        if peer.opaque.get("context_token").and_then(|v| v.as_str()).is_some() {
+        if peer
+            .opaque
+            .get("context_token")
+            .and_then(|v| v.as_str())
+            .is_some()
+        {
             return peer.clone();
         }
         if let Some(token) = self.registry.latest(&peer.user_id) {
@@ -419,7 +440,12 @@ impl WechatChannel {
         }
         batch.lines.push(line);
         batch.peer = Some(peer.clone());
-        Self::reset_batch_timer(&mut batch, batch_ref, self.send_queue.clone(), self.registry.clone());
+        Self::reset_batch_timer(
+            &mut batch,
+            batch_ref,
+            self.send_queue.clone(),
+            self.registry.clone(),
+        );
     }
 
     /// (Re)start the flush timer on the batch. Shared by push_tool_line and
@@ -446,7 +472,12 @@ impl WechatChannel {
                 (std::mem::take(&mut b.lines), buf, b.peer.take())
             };
             if let Some(peer) = peer {
-                let enriched = if peer.opaque.get("context_token").and_then(|v| v.as_str()).is_some() {
+                let enriched = if peer
+                    .opaque
+                    .get("context_token")
+                    .and_then(|v| v.as_str())
+                    .is_some()
+                {
                     peer
                 } else if let Some(tok) = registry.latest(&peer.user_id) {
                     let mut p = peer;
@@ -503,11 +534,7 @@ impl ImChannel for WechatChannel {
         Err(agentline_bridge::Error::NotSupported)
     }
 
-    async fn send_event(
-        &self,
-        to: &PeerRef,
-        event: &MessageEvent,
-    ) -> agentline_bridge::Result<()> {
+    async fn send_event(&self, to: &PeerRef, event: &MessageEvent) -> agentline_bridge::Result<()> {
         let to = self.enrich_peer(to).await;
         let to = &to;
         let peer_id = &to.user_id;
@@ -562,13 +589,16 @@ impl ImChannel for WechatChannel {
                                 None
                             }
                         };
-                        streams.insert(peer_id.clone(), ActiveStream {
-                            sender: sender_opt,
-                            md_filter: markdown::StreamingMarkdownFilter::new(),
-                            last_activity: std::time::Instant::now(),
-                            signaled: false,
-                            buffered_text: String::new(),
-                        });
+                        streams.insert(
+                            peer_id.clone(),
+                            ActiveStream {
+                                sender: sender_opt,
+                                md_filter: markdown::StreamingMarkdownFilter::new(),
+                                last_activity: std::time::Instant::now(),
+                                signaled: false,
+                                buffered_text: String::new(),
+                            },
+                        );
                         streams.get_mut(peer_id).unwrap()
                     }
                 };
@@ -583,7 +613,8 @@ impl ImChannel for WechatChannel {
                                 ticket,
                                 sender.client_stream_id(),
                                 "result",
-                            ).await
+                            )
+                            .await
                             {
                                 tracing::error!(error=%e, "send_stream_signal failed");
                             } else {
@@ -594,10 +625,13 @@ impl ImChannel for WechatChannel {
                     let filtered = active.md_filter.feed(text);
                     if !filtered.is_empty() {
                         for chunk in split_utf8_chunks(&filtered, MAX_PIECE_BYTES) {
-                            if let Err(e) = sender.send_piece(&stream::PiecePayload::Text {
-                                text: chunk.to_string(),
-                                stream_type: "result".to_string(),
-                            }).await {
+                            if let Err(e) = sender
+                                .send_piece(&stream::PiecePayload::Text {
+                                    text: chunk.to_string(),
+                                    stream_type: "result".to_string(),
+                                })
+                                .await
+                            {
                                 tracing::error!(error=%e, "send_piece failed");
                             }
                         }
@@ -657,7 +691,9 @@ impl ImChannel for WechatChannel {
                 Ok(())
             }
 
-            MessageEvent::PermissionRequest { what, danger, tag, .. } => {
+            MessageEvent::PermissionRequest {
+                what, danger, tag, ..
+            } => {
                 self.flush_tool_batch().await;
                 if let Some(buffered) = self.end_stream_for(peer_id).await {
                     self.send_plain(to, &buffered).await?;
@@ -708,7 +744,11 @@ impl ImChannel for WechatChannel {
 
             MessageEvent::ToolProgress { id, output } => {
                 let mut batch = self.tool_batch.lock().await;
-                batch.progress.entry(id.clone()).or_default().push_str(output);
+                batch
+                    .progress
+                    .entry(id.clone())
+                    .or_default()
+                    .push_str(output);
                 batch.peer = Some(to.clone());
                 Ok(())
             }
@@ -769,7 +809,8 @@ fn split_plain_message(text: &str, max_bytes: usize) -> Vec<String> {
     while remaining.len() > max_bytes {
         let window = &remaining[..max_bytes];
         // Prefer splitting at a double newline (paragraph break).
-        let split_at = window.rfind("\n\n")
+        let split_at = window
+            .rfind("\n\n")
             .map(|i| i + 2)
             // Fall back to single newline.
             .or_else(|| window.rfind('\n').map(|i| i + 1))

@@ -40,13 +40,15 @@ pub trait ImChannel: Send + Sync + 'static {
             MessageEvent::StreamChunk { text } => text.clone(),
             MessageEvent::StreamEnd => return Ok(()),
             MessageEvent::PlainText(text) => text.clone(),
-            MessageEvent::ToolStart { kind, label, .. } => {
-                tool_label(*kind, &truncate(label, 200))
-            }
+            MessageEvent::ToolStart { kind, label, .. } => tool_label(*kind, &truncate(label, 200)),
             MessageEvent::ToolProgress { .. } => return Ok(()),
             MessageEvent::ToolEnd { ok, summary, .. } => {
                 let mark = if *ok { "✅" } else { "❌" };
-                let default = if *ok { t!("im.tool_done") } else { t!("im.tool_failed") };
+                let default = if *ok {
+                    t!("im.tool_done")
+                } else {
+                    t!("im.tool_failed")
+                };
                 let body = summary.as_deref().unwrap_or(&default);
                 format!("{mark} {body}")
             }
@@ -57,7 +59,9 @@ pub trait ImChannel: Send + Sync + 'static {
                 }
                 s.trim_end().to_string()
             }
-            MessageEvent::PermissionRequest { what, danger, tag, .. } => {
+            MessageEvent::PermissionRequest {
+                what, danger, tag, ..
+            } => {
                 let icon = match danger {
                     PermissionDanger::Low => "🟢",
                     PermissionDanger::Medium => "🟡",
@@ -101,7 +105,9 @@ pub trait ImChannel: Send + Sync + 'static {
                 s
             }
             MessageEvent::Done => return Ok(()),
-            MessageEvent::Error(msg) => t!("im.error_prefix", msg = truncate(msg, 1500)).to_string(),
+            MessageEvent::Error(msg) => {
+                t!("im.error_prefix", msg = truncate(msg, 1500)).to_string()
+            }
         };
         self.send_text(to, &text).await
     }

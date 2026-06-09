@@ -75,9 +75,7 @@ async fn poll_once(
 
     if !parsed.ok {
         return Err(Error::Api(
-            parsed
-                .description
-                .unwrap_or_else(|| "unknown error".into()),
+            parsed.description.unwrap_or_else(|| "unknown error".into()),
         ));
     }
 

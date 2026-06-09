@@ -119,10 +119,18 @@ pub struct ImSection {
 impl ImSection {
     pub fn enabled_backends(&self) -> Vec<&str> {
         let mut v = Vec::new();
-        if self.wechat.enable { v.push("wechat"); }
-        if self.dingtalk.enable { v.push("dingtalk"); }
-        if self.feishu.enable { v.push("feishu"); }
-        if self.telegram.enable { v.push("telegram"); }
+        if self.wechat.enable {
+            v.push("wechat");
+        }
+        if self.dingtalk.enable {
+            v.push("dingtalk");
+        }
+        if self.feishu.enable {
+            v.push("feishu");
+        }
+        if self.telegram.enable {
+            v.push("telegram");
+        }
         v
     }
 }

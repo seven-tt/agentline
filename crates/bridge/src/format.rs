@@ -15,7 +15,11 @@ pub fn strip_cwd_prefix(s: &str, cwd: &std::path::Path) -> String {
     if s.starts_with(cwd_str.as_ref()) {
         let rest = &s[cwd_str.len()..];
         let rest = rest.strip_prefix('/').unwrap_or(rest);
-        if rest.is_empty() { ".".to_string() } else { rest.to_string() }
+        if rest.is_empty() {
+            ".".to_string()
+        } else {
+            rest.to_string()
+        }
     } else {
         s.to_string()
     }

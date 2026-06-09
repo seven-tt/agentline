@@ -54,7 +54,10 @@ pub fn start(
         // Overview
         .route("/api/overview", get(api_overview))
         // Channels (IM)
-        .route("/api/channels", get(api_channels_get).post(api_channels_set))
+        .route(
+            "/api/channels",
+            get(api_channels_get).post(api_channels_set),
+        )
         .route("/api/channels/wechat/login/start", post(api_login_start))
         .route("/api/channels/wechat/login/cancel", post(api_login_cancel))
         .route("/api/channels/wechat/login/status", get(api_login_status))
@@ -63,11 +66,17 @@ pub fn start(
         .route("/api/agents", get(api_agents))
         .route("/api/agents/config", post(api_agents_config))
         .route("/api/agents/{id}/install", post(api_agents_install))
-        .route("/api/agents/{id}/check-update", post(api_agents_check_update))
+        .route(
+            "/api/agents/{id}/check-update",
+            post(api_agents_check_update),
+        )
         // Projects
         .route("/api/projects", get(api_projects_get).put(api_projects_set))
         // Settings
-        .route("/api/settings", get(api_settings_get).post(api_settings_set))
+        .route(
+            "/api/settings",
+            get(api_settings_get).post(api_settings_set),
+        )
         .route("/api/settings/restart", post(api_restart))
         // Logs
         .route("/api/logs", get(api_logs))
@@ -745,13 +754,36 @@ struct InstallResult {
 }
 
 const INSTALL_COMMANDS: &[(&str, &[&str])] = &[
-    ("claude-code", &["npm", "install", "-g", "@anthropic-ai/claude-code"]),
-    ("kimi", &["sh", "-c", "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash"]),
-    ("qoder", &["sh", "-c", "curl -fsSL https://qoder.com/install | bash"]),
+    (
+        "claude-code",
+        &["npm", "install", "-g", "@anthropic-ai/claude-code"],
+    ),
+    (
+        "kimi",
+        &[
+            "sh",
+            "-c",
+            "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
+        ],
+    ),
+    (
+        "qoder",
+        &["sh", "-c", "curl -fsSL https://qoder.com/install | bash"],
+    ),
     ("opencode", &["npm", "install", "-g", "opencode-ai"]),
-    ("kiro", &["sh", "-c", "curl -fsSL https://cli.kiro.dev/install | bash"]),
+    (
+        "kiro",
+        &["sh", "-c", "curl -fsSL https://cli.kiro.dev/install | bash"],
+    ),
     ("gemini", &["npm", "install", "-g", "@google/gemini-cli"]),
-    ("hermes", &["sh", "-c", "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"]),
+    (
+        "hermes",
+        &[
+            "sh",
+            "-c",
+            "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
+        ],
+    ),
     ("codex", &["npm", "install", "-g", "@openai/codex"]),
 ];
 

@@ -53,14 +53,8 @@ impl KimiConfig {
 ///
 /// Extracted so it can be unit-tested without spawning a real process.
 fn resolve_command_args(cfg: &KimiConfig) -> (String, Vec<String>) {
-    let command = cfg
-        .command
-        .clone()
-        .unwrap_or_else(|| "kimi".to_string());
-    let args = cfg
-        .args
-        .clone()
-        .unwrap_or_else(|| vec!["acp".to_string()]);
+    let command = cfg.command.clone().unwrap_or_else(|| "kimi".to_string());
+    let args = cfg.args.clone().unwrap_or_else(|| vec!["acp".to_string()]);
     (command, args)
 }
 

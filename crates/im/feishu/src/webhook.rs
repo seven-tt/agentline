@@ -26,10 +26,7 @@ pub fn spawn_webhook(
     bind: String,
     cfg: WebhookConfig,
     buffer: usize,
-) -> (
-    mpsc::Receiver<InboundMessage>,
-    tokio::task::JoinHandle<()>,
-) {
+) -> (mpsc::Receiver<InboundMessage>, tokio::task::JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(buffer);
     let state = Arc::new(WebhookState { cfg, tx });
     let app = Router::new()
@@ -77,8 +74,7 @@ async fn handle_event(
 
     // Verify event token
     if let Some(ref header) = payload.header {
-        if !state.cfg.verification_token.is_empty()
-            && header.token != state.cfg.verification_token
+        if !state.cfg.verification_token.is_empty() && header.token != state.cfg.verification_token
         {
             tracing::warn!(event_id=%header.event_id, "feishu event: token mismatch");
             return (StatusCode::FORBIDDEN, Json(serde_json::json!({})));
@@ -115,8 +111,7 @@ async fn dispatch_message(
     let msg = message.ok_or_else(|| Error::Parse("missing message".into()))?;
 
     // allowed_users filter
-    if !state.cfg.allowed_users.is_empty()
-        && !state.cfg.allowed_users.contains(&sender_id.open_id)
+    if !state.cfg.allowed_users.is_empty() && !state.cfg.allowed_users.contains(&sender_id.open_id)
     {
         tracing::debug!(open_id=%sender_id.open_id, "feishu: user not in allowed_users, ignoring");
         return Ok(());

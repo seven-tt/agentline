@@ -80,8 +80,16 @@ fn edit_diff_suffix(raw: &serde_json::Value) -> String {
     let old = raw.get("old_string").and_then(|v| v.as_str());
     let new = raw.get("new_string").and_then(|v| v.as_str());
     if let (Some(old_s), Some(new_s)) = (old, new) {
-        let del = if old_s.is_empty() { 0 } else { old_s.lines().count() };
-        let add = if new_s.is_empty() { 0 } else { new_s.lines().count() };
+        let del = if old_s.is_empty() {
+            0
+        } else {
+            old_s.lines().count()
+        };
+        let add = if new_s.is_empty() {
+            0
+        } else {
+            new_s.lines().count()
+        };
         match (add, del) {
             (0, 0) => String::new(),
             (a, 0) => format!(" +{a}"),
@@ -217,7 +225,10 @@ fn plan_to_update(plan: Plan) -> Option<AgentUpdate> {
         .iter()
         .filter_map(|e| {
             let content = e.get("content").and_then(|v| v.as_str())?;
-            let status = e.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
+            let status = e
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("pending");
             let text = match status {
                 "completed" => format!("~~{}~~ ✅", content),
                 "in_progress" => format!("{} ⏳", content),

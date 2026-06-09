@@ -34,8 +34,8 @@ pub use error::{Error, Result};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 use agentline_bridge::{
     AgentBackend, AgentUpdate, Error as CoreError, Result as CoreResult, SessionId,
@@ -125,7 +125,10 @@ impl CodexBackend {
         let new_pids = agentline_bridge::process::find_new_child_pids(our_pid, &before);
         let child_pid = Arc::new(AtomicI32::new(new_pids.first().copied().unwrap_or(0)));
         if child_pid.load(Ordering::SeqCst) > 0 {
-            tracing::debug!(pid = child_pid.load(Ordering::SeqCst), "tracked codex child process");
+            tracing::debug!(
+                pid = child_pid.load(Ordering::SeqCst),
+                "tracked codex child process"
+            );
         } else {
             tracing::warn!("could not detect codex child PID; orphan cleanup may not work");
         }
@@ -137,7 +140,11 @@ impl CodexBackend {
                 tracing::error!(error=%e, "codex bridge exited");
             }
         });
-        Ok(Self { cmd_tx, child_pid, _bg: bg })
+        Ok(Self {
+            cmd_tx,
+            child_pid,
+            _bg: bg,
+        })
     }
 
     fn kill_child(&self) {

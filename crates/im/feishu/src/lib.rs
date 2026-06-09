@@ -84,11 +84,9 @@ impl FeishuChannel {
     async fn finalize_card(&self, peer_id: &str) {
         let mut cards = self.active_cards.lock().await;
         if let Some(active) = cards.remove(peer_id) {
-            let card_json =
-                types::build_streaming_card(&active.accumulated_text, "finished");
+            let card_json = types::build_streaming_card(&active.accumulated_text, "finished");
             if let Err(e) =
-                send::update_card(&self.http, &self.token_mgr, &active.message_id, &card_json)
-                    .await
+                send::update_card(&self.http, &self.token_mgr, &active.message_id, &card_json).await
             {
                 tracing::warn!(error=%e, "failed to finalize feishu card");
             }
@@ -105,7 +103,12 @@ impl FeishuChannel {
             .map_err(Into::into)
     }
 
-    async fn send_rich(&self, to: &PeerRef, title: &str, text: &str) -> agentline_bridge::Result<()> {
+    async fn send_rich(
+        &self,
+        to: &PeerRef,
+        title: &str,
+        text: &str,
+    ) -> agentline_bridge::Result<()> {
         if text.is_empty() {
             return Ok(());
         }
@@ -126,11 +129,7 @@ impl ImChannel for FeishuChannel {
         Err(agentline_bridge::Error::NotSupported)
     }
 
-    async fn send_event(
-        &self,
-        to: &PeerRef,
-        event: &MessageEvent,
-    ) -> agentline_bridge::Result<()> {
+    async fn send_event(&self, to: &PeerRef, event: &MessageEvent) -> agentline_bridge::Result<()> {
         let peer_id = &to.user_id;
 
         match event {
@@ -139,10 +138,8 @@ impl ImChannel for FeishuChannel {
                 match cards.get_mut(peer_id) {
                     Some(active) => {
                         active.accumulated_text.push_str(text);
-                        let card_json = types::build_streaming_card(
-                            &active.accumulated_text,
-                            "processing",
-                        );
+                        let card_json =
+                            types::build_streaming_card(&active.accumulated_text, "processing");
                         if let Err(e) = send::update_card(
                             &self.http,
                             &self.token_mgr,
@@ -156,13 +153,8 @@ impl ImChannel for FeishuChannel {
                     }
                     None => {
                         let card_json = types::build_streaming_card(text, "processing");
-                        match send::send_card(
-                            &self.http,
-                            &self.token_mgr,
-                            peer_id,
-                            &card_json,
-                        )
-                        .await
+                        match send::send_card(&self.http, &self.token_mgr, peer_id, &card_json)
+                            .await
                         {
                             Ok(message_id) => {
                                 cards.insert(
@@ -219,7 +211,9 @@ impl ImChannel for FeishuChannel {
                 self.send_rich(to, "📋 执行计划", text.trim_end()).await
             }
 
-            MessageEvent::PermissionRequest { what, danger, tag, .. } => {
+            MessageEvent::PermissionRequest {
+                what, danger, tag, ..
+            } => {
                 self.finalize_card(peer_id).await;
                 let icon = match danger {
                     PermissionDanger::Low => "🟢",

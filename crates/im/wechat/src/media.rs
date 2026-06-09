@@ -3,17 +3,17 @@
 use crate::error::{Error, Result};
 use crate::http::HttpClient;
 use crate::types::{FileItem, ImageItem, MediaRef, VideoItem};
-use aes::cipher::{BlockDecryptMut, KeyInit};
 use aes::Aes128;
+use aes::cipher::{BlockDecryptMut, KeyInit};
 use base64::Engine;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const DEFAULT_CDN_BASE: &str = "https://novac2c.cdn.weixin.qq.com/c2c";
 
 /// Decrypt AES-128-ECB with PKCS7 padding.
 fn decrypt_aes_ecb(key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>> {
-    let mut cipher = Aes128::new_from_slice(key)
-        .map_err(|e| Error::other(format!("invalid AES key: {e}")))?;
+    let mut cipher =
+        Aes128::new_from_slice(key).map_err(|e| Error::other(format!("invalid AES key: {e}")))?;
 
     let mut buf = ciphertext.to_vec();
 
@@ -69,11 +69,7 @@ fn parse_aes_key(aes_key_b64: &str, label: &str) -> Result<Vec<u8>> {
 }
 
 /// Download a CDN resource and optionally decrypt it.
-pub async fn download_media(
-    http: &HttpClient,
-    media: &MediaRef,
-    label: &str,
-) -> Result<Vec<u8>> {
+pub async fn download_media(http: &HttpClient, media: &MediaRef, label: &str) -> Result<Vec<u8>> {
     let cdn_base = DEFAULT_CDN_BASE;
     let url = format!(
         "{}/download?encrypted_query_param={}",
@@ -112,7 +108,7 @@ fn resolve_image_aes_key(img: &ImageItem) -> Option<String> {
 pub async fn download_image(
     http: &HttpClient,
     img: &ImageItem,
-    save_dir: &PathBuf,
+    save_dir: &Path,
 ) -> Option<PathBuf> {
     let media = img.media.as_ref()?;
     let label = "image";
@@ -148,11 +144,7 @@ pub async fn download_image(
 }
 
 /// Download a file, decrypt if needed, save to disk, return the path.
-pub async fn download_file(
-    http: &HttpClient,
-    file: &FileItem,
-    save_dir: &PathBuf,
-) -> Option<PathBuf> {
+pub async fn download_file(http: &HttpClient, file: &FileItem, save_dir: &Path) -> Option<PathBuf> {
     let media = file.media.as_ref()?;
 
     let data = match download_media(http, media, "file").await {
@@ -187,7 +179,7 @@ pub async fn download_file(
 pub async fn download_video(
     http: &HttpClient,
     video: &VideoItem,
-    save_dir: &PathBuf,
+    save_dir: &Path,
 ) -> Option<PathBuf> {
     let media = video.media.as_ref()?;
 
@@ -230,9 +222,9 @@ fn infer_image_ext(data: &[u8]) -> &'static str {
 
 fn infer_video_ext(data: &[u8]) -> &'static str {
     // MP4: ftyp box at offset 4, or various brand signatures
-    if data.len() > 12 && &data[4..8] == b"ftyp" {
-        "mp4"
-    } else if data.starts_with(b"\x00\x00\x00") && data.get(4..8) == Some(b"ftyp") {
+    if (data.len() > 12 && &data[4..8] == b"ftyp")
+        || (data.starts_with(b"\x00\x00\x00") && data.get(4..8) == Some(b"ftyp"))
+    {
         "mp4"
     } else {
         "bin"

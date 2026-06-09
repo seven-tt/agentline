@@ -22,7 +22,9 @@ pub async fn run(cfg: AppConfig) -> Result<()> {
 
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("open").arg(&qr.login_url).spawn();
+        let _ = std::process::Command::new("open")
+            .arg(&qr.login_url)
+            .spawn();
     }
 
     let result = wait_for_scan(&http, &qr).await.context("iLink scan")?;

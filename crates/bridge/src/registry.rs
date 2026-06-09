@@ -34,9 +34,6 @@ impl SessionRegistry {
     }
 
     pub fn snapshot(&self) -> HashMap<String, ImSnapshot> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }

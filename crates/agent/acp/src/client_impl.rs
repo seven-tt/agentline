@@ -10,7 +10,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use agent_client_protocol::{self as acp, Client};
-use agentline_bridge::{AgentUpdate, ElicitField, ElicitFieldType, ElicitOption, PermissionDanger, ToolKind};
+use agentline_bridge::{
+    AgentUpdate, ElicitField, ElicitFieldType, ElicitOption, PermissionDanger, ToolKind,
+};
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
@@ -133,8 +135,10 @@ impl Client for BridgedClient {
 
 impl BridgedClient {
     async fn handle_elicitation(&self, args: acp::ExtRequest) -> acp::Result<acp::ExtResponse> {
-        let req: acp::ElicitationRequest = serde_json::from_str(args.params.get())
-            .map_err(|e| acp::Error::new(i32::from(acp::ErrorCode::InvalidParams), e.to_string()))?;
+        let req: acp::ElicitationRequest =
+            serde_json::from_str(args.params.get()).map_err(|e| {
+                acp::Error::new(i32::from(acp::ErrorCode::InvalidParams), e.to_string())
+            })?;
 
         let elicit_id = format!("elicit-{}", {
             let mut c = self.perm_counter.borrow_mut();
@@ -143,19 +147,14 @@ impl BridgedClient {
         });
 
         let schema = match &req.mode {
-            acp::ElicitationMode::Form(form) => Some(map_elicitation_schema(&form.requested_schema)),
+            acp::ElicitationMode::Form(form) => {
+                Some(map_elicitation_schema(&form.requested_schema))
+            }
             _ => None,
         };
 
         // Push ElicitInput to the session stream.
-        if let Some(tx) = self
-            .routing
-            .session_streams
-            .lock()
-            .await
-            .values()
-            .next()
-        {
+        if let Some(tx) = self.routing.session_streams.lock().await.values().next() {
             let _ = tx.send(AgentUpdate::ElicitInput {
                 id: elicit_id.clone(),
                 prompt: req.message.clone(),
@@ -178,8 +177,9 @@ impl BridgedClient {
         } else {
             serde_json::json!({ "action": "accept", "content": response })
         };
-        let raw = serde_json::value::RawValue::from_string(action.to_string())
-            .map_err(|e| acp::Error::new(i32::from(acp::ErrorCode::InternalError), e.to_string()))?;
+        let raw = serde_json::value::RawValue::from_string(action.to_string()).map_err(|e| {
+            acp::Error::new(i32::from(acp::ErrorCode::InternalError), e.to_string())
+        })?;
         Ok(acp::ExtResponse::new(Arc::from(raw)))
     }
 }
@@ -213,7 +213,10 @@ fn map_property_schema(
         acp::ElicitationPropertySchema::String(s) => {
             let json = serde_json::to_value(s).unwrap_or_default();
             let title = json.get("title").and_then(|v| v.as_str()).map(String::from);
-            let description = json.get("description").and_then(|v| v.as_str()).map(String::from);
+            let description = json
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(String::from);
 
             // Check for enum (single-select)
             if let Some(values) = json.get("enum").and_then(|v| v.as_array()) {
@@ -226,7 +229,11 @@ fn map_property_schema(
                         description: None,
                     })
                     .collect();
-                return (title, description, ElicitFieldType::SingleSelect { options });
+                return (
+                    title,
+                    description,
+                    ElicitFieldType::SingleSelect { options },
+                );
             }
 
             // Check for oneOf (single-select with labels)
@@ -240,7 +247,10 @@ fn map_property_schema(
                             .and_then(|v| v.as_str())
                             .unwrap_or(&value)
                             .to_string();
-                        let desc = item.get("description").and_then(|v| v.as_str()).map(String::from);
+                        let desc = item
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
                         Some(ElicitOption {
                             value,
                             label,
@@ -249,39 +259,66 @@ fn map_property_schema(
                     })
                     .collect();
                 if !options.is_empty() {
-                    return (title, description, ElicitFieldType::SingleSelect { options });
+                    return (
+                        title,
+                        description,
+                        ElicitFieldType::SingleSelect { options },
+                    );
                 }
             }
 
-            let format = json.get("format").and_then(|v| v.as_str()).map(String::from);
+            let format = json
+                .get("format")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             (title, description, ElicitFieldType::Text { format })
         }
         acp::ElicitationPropertySchema::Number(_n) => {
             let json = serde_json::to_value(_n).unwrap_or_default();
             let title = json.get("title").and_then(|v| v.as_str()).map(String::from);
-            let description = json.get("description").and_then(|v| v.as_str()).map(String::from);
+            let description = json
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             let minimum = json.get("minimum").and_then(|v| v.as_f64());
             let maximum = json.get("maximum").and_then(|v| v.as_f64());
-            (title, description, ElicitFieldType::Number { minimum, maximum })
+            (
+                title,
+                description,
+                ElicitFieldType::Number { minimum, maximum },
+            )
         }
         acp::ElicitationPropertySchema::Integer(_i) => {
             let json = serde_json::to_value(_i).unwrap_or_default();
             let title = json.get("title").and_then(|v| v.as_str()).map(String::from);
-            let description = json.get("description").and_then(|v| v.as_str()).map(String::from);
+            let description = json
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             let minimum = json.get("minimum").and_then(|v| v.as_f64());
             let maximum = json.get("maximum").and_then(|v| v.as_f64());
-            (title, description, ElicitFieldType::Number { minimum, maximum })
+            (
+                title,
+                description,
+                ElicitFieldType::Number { minimum, maximum },
+            )
         }
         acp::ElicitationPropertySchema::Boolean(_b) => {
             let json = serde_json::to_value(_b).unwrap_or_default();
             let title = json.get("title").and_then(|v| v.as_str()).map(String::from);
-            let description = json.get("description").and_then(|v| v.as_str()).map(String::from);
+            let description = json
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             (title, description, ElicitFieldType::Boolean)
         }
         acp::ElicitationPropertySchema::Array(ms) => {
             let json = serde_json::to_value(ms).unwrap_or_default();
             let title = json.get("title").and_then(|v| v.as_str()).map(String::from);
-            let description = json.get("description").and_then(|v| v.as_str()).map(String::from);
+            let description = json
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(String::from);
 
             // Multi-select: items.enum or items.oneOf
             let items = json.get("items").unwrap_or(&Value::Null);
@@ -307,7 +344,10 @@ fn map_property_schema(
                             .and_then(|v| v.as_str())
                             .unwrap_or(&value)
                             .to_string();
-                        let desc = item.get("description").and_then(|v| v.as_str()).map(String::from);
+                        let desc = item
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
                         Some(ElicitOption {
                             value,
                             label,
@@ -358,7 +398,10 @@ fn extract_tool_kind(tool_call: &acp::ToolCallUpdate) -> ToolKind {
         if raw.get("command").is_some() {
             return ToolKind::Shell;
         }
-        if raw.get("path").is_some() || raw.get("file_path").is_some() || raw.get("filepath").is_some() {
+        if raw.get("path").is_some()
+            || raw.get("file_path").is_some()
+            || raw.get("filepath").is_some()
+        {
             return ToolKind::FileEdit;
         }
         if raw.get("url").is_some() {

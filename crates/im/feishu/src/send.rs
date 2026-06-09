@@ -116,8 +116,5 @@ async fn check_response(resp: reqwest::Response) -> Result<String> {
             parsed.code, parsed.msg
         )));
     }
-    Ok(parsed
-        .data
-        .map(|d| d.message_id)
-        .unwrap_or_default())
+    Ok(parsed.data.map(|d| d.message_id).unwrap_or_default())
 }

@@ -10,7 +10,7 @@
 //! cargo test -p agentline-agent-claude-code --test agent_env -- --ignored --nocapture
 //! ```
 
-use agentline_agent_claude_code::{spawn, ClaudeCodeConfig};
+use agentline_agent_claude_code::{ClaudeCodeConfig, spawn};
 use agentline_bridge::{AgentBackend, AgentUpdate};
 use futures::StreamExt;
 use std::time::Duration;

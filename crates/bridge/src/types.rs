@@ -119,7 +119,9 @@ pub enum AgentUpdate {
         is_final: bool,
     },
     /// Agent reasoning / thinking chunk (not shown to user verbatim).
-    Thinking { text: String },
+    Thinking {
+        text: String,
+    },
     ToolCallStart {
         id: String,
         kind: ToolKind,
@@ -213,17 +215,34 @@ pub enum MessageEvent {
     /// A complete non-streaming text (e.g. command replies like /help).
     PlainText(String),
     /// A tool invocation has started.
-    ToolStart { id: String, kind: ToolKind, label: String },
+    ToolStart {
+        id: String,
+        kind: ToolKind,
+        label: String,
+    },
     /// Raw stdout/stderr chunk from a running tool (often suppressed by IMs).
     ToolProgress { id: String, output: String },
     /// A tool invocation has finished.
-    ToolEnd { id: String, ok: bool, summary: Option<String> },
+    ToolEnd {
+        id: String,
+        ok: bool,
+        summary: Option<String>,
+    },
     /// The agent produced a plan.
     Plan { steps: Vec<String> },
     /// The agent needs user permission for a dangerous action.
-    PermissionRequest { id: String, what: String, danger: PermissionDanger, tag: String },
+    PermissionRequest {
+        id: String,
+        what: String,
+        danger: PermissionDanger,
+        tag: String,
+    },
     /// The agent is asking the user a structured question (elicitation).
-    ElicitInput { id: String, prompt: String, schema: Option<Vec<ElicitField>> },
+    ElicitInput {
+        id: String,
+        prompt: String,
+        schema: Option<Vec<ElicitField>>,
+    },
     /// The agent turn has completed.
     Done,
     /// An error occurred inside the agent.
@@ -252,7 +271,10 @@ pub enum ElicitFieldType {
     /// Boolean yes/no.
     Boolean,
     /// Numeric input.
-    Number { minimum: Option<f64>, maximum: Option<f64> },
+    Number {
+        minimum: Option<f64>,
+        maximum: Option<f64>,
+    },
 }
 
 /// One option in a single-select or multi-select field.
