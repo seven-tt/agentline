@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <!--
+    Template-image silhouette: pure black on transparent.
+    macOS auto-tints for light/dark menu bars (set via
+    TrayIconBuilder::with_icon_as_template(true)).
+
+    Preserves the original semantic: hexagon "agent core" on the left,
+    pulse-line connections to dots on the right. No filled background
+    rectangle — the menu bar shows through.
+  -->
+  <defs>
+    <!-- Inner-ring cut-out for the hex core: a small donut around (13,14). -->
+    <mask id="core">
+      <rect width="32" height="32" fill="white"/>
+      <circle cx="13" cy="14" r="2.3" fill="black"/>
+      <circle cx="13" cy="14" r="0.9" fill="white"/>
+    </mask>
+  </defs>
+
+  <!-- Hexagon agent core -->
+  <polygon points="13,7 20,10.5 20,17.5 13,21 6,17.5 6,10.5"
+           fill="black" mask="url(#core)"/>
+
+  <!-- Pulse lines extending right -->
+  <line x1="20.5" y1="14" x2="28" y2="14"
+        stroke="black" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="19"   y1="10" x2="25" y2="7"
+        stroke="black" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="19"   y1="18" x2="25" y2="21"
+        stroke="black" stroke-width="1.2" stroke-linecap="round"/>
+
+  <!-- Pulse dots -->
+  <circle cx="26" cy="14"   r="1.6" fill="black"/>
+  <circle cx="24" cy="7.5"  r="1.2" fill="black"/>
+  <circle cx="24" cy="20.5" r="1.2" fill="black"/>
+</svg>

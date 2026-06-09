@@ -1,0 +1,35 @@
+[package]
+name = "agentline-tray"
+description = "Menu-bar / system-tray app for the agentline daemon. Controls and monitors the launchd-managed bridge process — does NOT embed the bridge itself."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[[bin]]
+name = "agentline-tray"
+path = "src/main.rs"
+
+[dependencies]
+tray-icon = { workspace = true }
+tao = { workspace = true }
+resvg = { version = "0.45", default-features = false }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder"] }
+objc2-foundation = "0.3"

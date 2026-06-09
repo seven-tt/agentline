@@ -1,0 +1,31 @@
+[package]
+name = "agentline-agent-codex"
+description = "OpenAI Codex CLI agent backend for agentline (drives `codex app-server` via the official codex-app-server-sdk)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[dependencies]
+agentline-bridge = { workspace = true }
+
+codex-app-server-sdk = { workspace = true }
+
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }

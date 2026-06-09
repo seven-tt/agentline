@@ -1,0 +1,13 @@
+wechat:
+  plan_title: "📋 **执行计划**"
+  error_title: "❌ **执行出错**"
+  perm_risk_low: "低风险"
+  perm_risk_medium: "中等风险"
+  perm_risk_high: "高风险"
+  perm_request: "⚠️ %{tag} 需授权: %{what}\n%{icon} %{risk} · y 单次 / s session级 / n 拒绝"
+  tool_exec_done: "%{icon} 工具执行完成"
+  tool_exec_failed: "%{icon} 工具执行失败"
+  elicit_select_hint: "\n\n回复编号选择，或直接输入"
+  elicit_multi_hint: "\n\n回复编号选择，多选用逗号分隔"
+  elicit_bool_hint: "\n\n回复 y/n"
+  elicit_free_hint: "\n\n请直接回复"

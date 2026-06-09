@@ -1,0 +1,28 @@
+[package]
+name = "agentline-agent-hermes"
+description = "Hermes agent backend for agentline (drives `hermes acp` via the agent-acp transport)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[dependencies]
+agentline-bridge = { workspace = true }
+agentline-agent-acp = { workspace = true }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+futures = { workspace = true }
+tracing-subscriber = { workspace = true }

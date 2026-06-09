@@ -1,0 +1,116 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/bridge",
+    "crates/cli",
+    "crates/im/wechat",
+    "crates/im/dingtalk",
+    "crates/im/feishu",
+    "crates/im/telegram",
+    "crates/agent/acp",
+    "crates/agent/claude-code",
+    "crates/agent/codex",
+    "crates/agent/kimi",
+    "crates/agent/qoder",
+    "crates/agent/opencode",
+    "crates/agent/kiro",
+    "crates/agent/gemini",
+    "crates/agent/hermes",
+    "crates/tray",
+]
+
+[workspace.package]
+version = "1.2.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/seven/agentline"
+homepage = "https://github.com/seven/agentline"
+authors = ["seven"]
+keywords = ["chatops", "claude-code", "acp", "wechat", "dingtalk", "feishu", "telegram"]
+categories = ["command-line-utilities", "development-tools"]
+rust-version = "1.85"
+readme = "README.md"
+
+[workspace.dependencies]
+# core async
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+async-trait = "0.1"
+futures = "0.3"
+
+# serde
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "time", "local-time"] }
+time = { version = "0.3", features = ["macros", "local-offset", "formatting"] }
+
+# errors
+anyhow = "1"
+thiserror = "1"
+
+# fs paths
+directories = "5"
+
+# im-wechat
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+aes = "0.8"
+ecb = "0.1"
+cipher = "0.4"
+base64 = "0.22"
+rand = "0.8"
+qrcode = "0.14"
+
+# im-dingtalk
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+url = "2"
+
+# agent-acp (pinned to 0.10 — same as the proven acp-cli reference impl;
+# 0.13's closure-based API removed the direct ClientSideConnection that we want
+# in order to control child spawning and env vars).
+agent-client-protocol = "0.10"
+tokio-util = { version = "0.7", features = ["compat"] }
+dirs = "5"
+
+# agent-codex (Codex has its own JSON-RPC "app-server" protocol; this SDK
+# spawns `codex app-server` as a subprocess and gives us a typed Rust client).
+codex-app-server-sdk = "0.5"
+
+# i18n
+rust-i18n = "3"
+
+# cli
+clap = { version = "4", features = ["derive"] }
+config = { version = "0.14", default-features = false, features = ["toml"] }
+toml = "0.8"
+
+# embedded web dashboard
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+which = "7"
+
+# desktop tray (macOS / Windows / Linux menu-bar icon)
+tray-icon = { version = "0.24", default-features = false }
+tao = "0.35"
+
+# internal
+agentline-bridge = { path = "crates/bridge" }
+agentline-im-wechat = { path = "crates/im/wechat" }
+agentline-im-dingtalk = { path = "crates/im/dingtalk" }
+agentline-im-feishu = { path = "crates/im/feishu" }
+agentline-im-telegram = { path = "crates/im/telegram" }
+agentline-agent-acp = { path = "crates/agent/acp" }
+agentline-agent-claude-code = { path = "crates/agent/claude-code" }
+agentline-agent-codex = { path = "crates/agent/codex" }
+agentline-agent-kimi = { path = "crates/agent/kimi" }
+agentline-agent-qoder = { path = "crates/agent/qoder" }
+agentline-agent-opencode = { path = "crates/agent/opencode" }
+agentline-agent-kiro = { path = "crates/agent/kiro" }
+agentline-agent-gemini = { path = "crates/agent/gemini" }
+agentline-agent-hermes = { path = "crates/agent/hermes" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -1,0 +1,173 @@
+# ─── IM 通道 ──────────────────────────────────────────────────────────────────
+# 每个 IM 独立启停，enable = true 开启。目前运行时只支持同时启用一个 IM。
+
+[im.wechat]
+enable = false
+# 白名单：只接受这些 user_id 的入站消息（防外人）。空数组表示放过所有。
+allowed_users = []
+typing_interval_ms = 5000
+
+[im.dingtalk]
+enable = false
+client_id = ""        # appKey
+client_secret = ""    # appSecret
+# 白名单：staff_id 列表。空数组放过所有
+allowed_users = []
+
+[im.feishu]
+enable = false
+app_id = ""
+app_secret = ""
+verification_token = ""    # 事件订阅验证 token
+encrypt_key = ""           # 事件加密密钥（可选，空则不解密）
+webhook_bind = "0.0.0.0:9000"  # 飞书回调监听地址
+# 白名单：open_id 列表。空数组放过所有
+allowed_users = []
+
+[im.telegram]
+enable = false
+# 从 @BotFather 获取 token。
+bot_token = ""
+# 白名单：Telegram user_id（数字字符串）。空数组放过所有
+allowed_users = []
+# 自定义 API 地址（反代场景），留空 = https://api.telegram.org
+api_base = ""
+
+[agent]
+backend = "claude-code"   # "claude-code" | "kimi" | "qoder" | "opencode" | "kiro" | "gemini" | "hermes" | "codex" | "acp"
+
+# Claude Code 后端（默认）。所有字段都可省略，留空走库的默认。
+[agent.claude-code]
+# version = "0.16.2"        # @zed-industries/claude-code-acp 的 npm 版本
+# command = "npx"           # 启动器，留空 = npx
+# args = []                 # 完全覆盖启动参数；非空时 version 被忽略
+# extra_env = []            # [["FOO", "bar"]] 形式，注入到子进程
+# remove_env_extra = []     # 在默认剥除列表（CLAUDECODE 等）之外再剥几个
+# inject_settings_env = true  # 读 ~/.claude/settings.json 并把 env 灌进当前进程
+
+# Kimi Code CLI 后端。需要先 `pip install kimi-cli && kimi /login`。
+[agent.kimi]
+# command = "kimi"          # 启动器，留空 = kimi（PATH 里要有）
+# args = []                 # 完全覆盖启动参数；留空 = ["acp"]
+# extra_env = []
+# remove_env = []
+
+# Qoder CLI 后端。需要先安装 qodercli 并 `qodercli login`，或填 personal_access_token。
+[agent.qoder]
+# command = "qodercli"      # 启动器，留空 = qodercli（PATH 里要有）
+# args = []                 # 留空 = ["--acp"]
+# extra_env = []
+# remove_env = []
+# personal_access_token = ""  # 在 https://qoder.com/account/integrations 拿，免交互登录
+
+# OpenCode CLI 后端 (sst/opencode)。装：curl -fsSL https://opencode.ai/install | bash
+# 鉴权：`opencode auth login`
+[agent.opencode]
+# command = "opencode"      # 启动器，留空 = opencode（PATH 里要有）
+# args = []                 # 留空 = ["acp"]
+# extra_env = []
+# remove_env = []
+
+# Kiro CLI 后端 (AWS Kiro)。装：curl -fsSL https://cli.kiro.dev/install | bash
+# 鉴权：先交互跑一次 `kiro-cli` 登录
+[agent.kiro]
+# command = "kiro-cli"      # 启动器；如果 daemon PATH 不全，填绝对路径 ~/.local/bin/kiro-cli
+# args = []                 # 留空 = ["acp"]（+ "--agent <name>" 如果设了 agent_name）
+# agent_name = ""           # 用某个特定 Kiro agent 配置
+# extra_env = []
+# remove_env = []
+
+# Gemini CLI 后端 (Google)。装：`npm install -g @google/gemini-cli` 或 `brew install gemini-cli`
+# 鉴权：交互跑一次 `gemini` 走 Google 登录
+[agent.gemini]
+# command = "gemini"        # 启动器
+# args = []                 # 留空 = ["--acp"]
+# extra_env = []
+# remove_env = []
+
+# Hermes Agent 后端 (Nous Research)。装：curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+# 鉴权：`hermes setup --portal`（OAuth）或 `hermes auth add`
+[agent.hermes]
+# command = "hermes"        # 启动器
+# args = []                 # 留空 = ["acp"]
+# extra_env = []
+# remove_env = []
+
+# OpenAI Codex CLI 后端。需要先 `npm i -g @openai/codex && codex login`。
+[agent.codex]
+# command = "codex"               # 启动器，留空 = codex（PATH 里要有）
+# args = []                       # 留空 = ["app-server"]
+# extra_env = []
+# sandbox_mode = "workspace-write"  # read-only | workspace-write | danger-full-access
+# approval_mode = "never"          # never | on-request | on-failure | untrusted
+# skip_git_repo_check = true
+# model = ""                       # 留空 = codex 默认 (e.g. gpt-5-codex)
+
+# 通用 ACP 后端：接其它 ACP-speaking agent（自家 ACP server 等）
+[agent.acp]
+# command = "your-acp-agent"
+# args = []
+# extra_env = []
+# remove_env = []
+
+
+[bridge]
+# Working directory for the agent. Leave empty to auto-isolate each agent
+# under ~/.agentline/agents/<agent>/ (recommended — never operates in $HOME).
+# Set an explicit path to override, e.g. "~/projects/foo".
+default_cwd = ""
+state_dir = "~/.agentline"
+# 空闲多少秒后自动关闭并重建 agent session。0 = 禁用（session 一直保持到 /new 或进程退出）。
+# 默认 7200（2 小时）。
+session_idle_timeout_secs = 7200
+# UI 语言。"zh-CN" | "en"。默认中文。
+locale = "zh-CN"
+# 注意：全局 auto_approve_all 已移除。yolo 模式现在是 session 级的，
+# 使用 /yolo 命令开启，/new 或重启后自动恢复为 safe。
+
+
+[web]
+# 内嵌 dashboard：状态 / 日志 / 微信扫码登录。
+# 默认 enable=true，bind 在 localhost。改 0.0.0.0:7681 才能跨机访问（自己加防火墙）。
+enable = true
+bind = "127.0.0.1:7681"
+
+
+# ─── 项目列表 ─────────────────────────────────────────────────────────────────
+# 在微信中发送 /project 选择项目，新建 session 时 agent 会自动收到项目上下文
+# 并 clone 到工作目录。可配置多个。
+#
+# [[projects]]
+# name    = "my-app"           # 项目简称，用于 /project 选择
+# git_url = "https://github.com/org/my-app.git"
+#
+# [[projects]]
+# name    = "backend"
+# git_url = "git@github.com:org/backend.git"
+
+
+[proxy]
+# 代理配置（注入到所有 agent 子进程的环境变量）。
+# 空字符串 = 继承父进程的代理环境变量，不做修改。
+# RFC-1918 局域网地址（10.x / 172.16.x / 192.168.x 等）始终加入 NO_PROXY，
+# 无论此处是否配置。
+
+# HTTP 代理，e.g. "http://proxy.example.com:8080"
+# 同时设置 HTTP_PROXY 和 http_proxy。
+http = ""
+
+# HTTPS 代理。空 = 回退到 http 代理，再回退到父进程的 HTTPS_PROXY。
+https = ""
+
+# 额外的 no_proxy 条目（逗号分隔）。
+# 会与父进程的 NO_PROXY 和内置局域网段合并。
+# 示例：no_proxy = "myhost.internal,.corp.example.com,10.10.0.1"
+no_proxy = ""
+
+[log]
+# 日志级别：error | warn | info | debug | trace（默认 info）。
+# - 大部分运维细节在 debug；info 只打印消息流和关键节点；错误始终打印。
+# - 嘈杂的三方依赖（hyper/reqwest/rustls 等）始终固定在 warn，即使开 debug 也清爽。
+# - 不同级别有不同颜色；超长/多行日志会折叠成一行并以 … 截断。
+# - 环境变量 RUST_LOG 若设置，将完全覆盖此项（如 RUST_LOG=agentline=debug,reqwest=info）。
+level = "info"

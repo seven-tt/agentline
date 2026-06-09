@@ -1,0 +1,52 @@
+[package]
+name = "agentline"
+description = "Bridge any IM (WeChat / DingTalk / ...) to any coding agent (Claude Code via ACP / ...)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[[bin]]
+name = "agentline"
+path = "src/main.rs"
+
+[dependencies]
+agentline-bridge = { workspace = true }
+agentline-im-wechat = { workspace = true }
+agentline-im-dingtalk = { workspace = true }
+agentline-im-feishu = { workspace = true }
+agentline-im-telegram = { workspace = true }
+agentline-agent-acp = { workspace = true }
+agentline-agent-claude-code = { workspace = true }
+agentline-agent-kimi = { workspace = true }
+agentline-agent-qoder = { workspace = true }
+agentline-agent-opencode = { workspace = true }
+agentline-agent-kiro = { workspace = true }
+agentline-agent-gemini = { workspace = true }
+agentline-agent-hermes = { workspace = true }
+agentline-agent-codex = { workspace = true }
+
+rust-i18n = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+time = { workspace = true }
+dirs = { workspace = true }
+axum = { workspace = true }
+qrcode = { workspace = true }
+which = { workspace = true }
+futures = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
