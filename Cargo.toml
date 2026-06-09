@@ -95,7 +95,7 @@ tray-icon = { version = "0.24", default-features = false }
 tao = "0.35"
 
 # cross-platform process management (Windows only — macOS/Linux use libc)
-sysinfo = { version = "0.38", default-features = false }
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 
 # internal
 agentline-bridge = { path = "crates/bridge" }

@@ -171,6 +171,7 @@ pub fn list_child_pids(parent_pid: i32) -> HashSet<i32> {
 
 #[cfg(not(target_os = "macos"))]
 pub fn list_child_pids(parent_pid: i32) -> HashSet<i32> {
+    #[allow(unused_mut)]
     let mut children = HashSet::new();
     if parent_pid <= 1 {
         return children;
