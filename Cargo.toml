@@ -91,7 +91,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 which = "7"
 
 # desktop tray (macOS / Windows / Linux menu-bar icon)
-tray-icon = { version = "0.24", default-features = false }
+tray-icon = "0.24"
 tao = "0.35"
 
 # cross-platform process management (Windows only — macOS/Linux use libc)
