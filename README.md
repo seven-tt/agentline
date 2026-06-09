@@ -63,13 +63,25 @@ Agentline is a high-performance Rust bridge that turns any instant messaging pla
 
 ## Quick Start
 
+Requires **Rust 1.85+** and **macOS / Linux**.
+
+### Headless (CLI)
+
 ```bash
-cargo install agentline
-agentline                                  # auto-creates ~/.agentline/config.toml
-$EDITOR ~/.agentline/config.toml           # set IM credentials + choose agent
-agentline login                            # WeChat QR scan (if using WeChat)
-agentline                                  # start bridging
+curl -fsSL https://raw.githubusercontent.com/seven-tt/agentline/main/scripts/install.sh | bash
+agentline                                    # auto-creates ~/.agentline/config.toml
+$EDITOR ~/.agentline/config.toml             # set IM credentials + choose agent
+agentline login                              # WeChat QR scan (if using WeChat)
+agentline                                    # start bridging
 ```
+
+### With UI (macOS Menu Bar)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/seven-tt/agentline/main/scripts/install.sh | bash -s -- --tray
+```
+
+> **Windows** is not yet supported. Use [WSL](https://learn.microsoft.com/windows/wsl/) or build from source.
 
 That's it. Messages sent to your bot are routed to the coding agent; responses stream back in real-time.
 
@@ -162,26 +174,6 @@ http = ""                             # injected into all agent subprocesses
 ```
 
 See [`config.example.toml`](config.example.toml) for the full reference with all options documented.
-
-## Quick Install
-
-Requires **Rust 1.85+** and **macOS / Linux**.
-
-### Headless (CLI)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/seven-tt/agentline/main/scripts/install.sh | bash
-```
-
-### With UI (macOS Menu Bar)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/seven-tt/agentline/main/scripts/install.sh | bash -s -- --tray
-```
-
-> **Windows** is not yet supported. Use [WSL](https://learn.microsoft.com/windows/wsl/) or build from source.
-
-After install, edit `~/.agentline/config.toml` to set your IM credentials.
 
 ## Deployment
 
