@@ -4,7 +4,7 @@
     <strong>Connect Any IM to Any Coding Agent — In One Binary</strong>
   </p>
   <p align="center">
-    <a href="https://github.com/seven/agentline/actions/workflows/ci.yml"><img src="https://github.com/seven/agentline/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://github.com/seven-tt/agentline/actions/workflows/ci.yml"><img src="https://github.com/seven-tt/agentline/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="#license"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"></a>
     <a href="#"><img src="https://img.shields.io/badge/rust-1.85+-orange" alt="Rust"></a>
   </p>
@@ -189,7 +189,7 @@ agentline-tray install
 ## Building from Source
 
 ```bash
-git clone https://github.com/seven/agentline
+git clone https://github.com/seven-tt/agentline
 cd agentline
 cargo build --release
 ./target/release/agentline --help
