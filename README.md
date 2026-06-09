@@ -6,7 +6,7 @@
   <p align="center">
     <a href="https://github.com/seven-tt/agentline/actions/workflows/ci.yml"><img src="https://github.com/seven-tt/agentline/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="#license"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"></a>
-    <a href="#"><img src="https://img.shields.io/badge/rust-1.85+-orange" alt="Rust"></a>
+    <a href="#"><img src="https://img.shields.io/badge/rust-1.89+-orange" alt="Rust"></a>
   </p>
 </p>
 
@@ -63,7 +63,7 @@ Agentline is a high-performance Rust bridge that turns any instant messaging pla
 
 ## Quick Start
 
-Requires **Rust 1.85+** and **macOS / Linux**.
+Requires **Rust 1.89+**. Runs on **macOS**, **Linux**, and **Windows**.
 
 ### Headless (CLI)
 
@@ -75,13 +75,15 @@ agentline login                              # WeChat QR scan (if using WeChat)
 agentline                                    # start bridging
 ```
 
-### With UI (macOS Menu Bar)
+### With UI (System Tray)
 
 ```bash
+# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/seven-tt/agentline/main/scripts/install.sh | bash -s -- --tray
-```
 
-> **Windows** is not yet supported. Use [WSL](https://learn.microsoft.com/windows/wsl/) or build from source.
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/seven-tt/agentline/main/scripts/install.ps1 | iex
+```
 
 That's it. Messages sent to your bot are routed to the coding agent; responses stream back in real-time.
 
@@ -124,14 +126,14 @@ crates/
 
 ### Reliability
 - **Crash auto-recovery**: agent process dies → automatic respawn (up to 5 retries, 2s cooldown)
-- **Orphan process cleanup**: full process tree kill on shutdown via session-level reaping (macOS `setsid` + `proc_listpids`)
+- **Orphan process cleanup**: full process tree kill on shutdown via session-level reaping (macOS `setsid` + `proc_listpids`, Windows `sysinfo` tree walk)
 - **PID file tracking**: stale processes from previous crashes are cleaned on startup
 - **Single-instance lock**: prevents duplicate daemons racing on the same IM token
 
 ### Operations
-- Background service mode via launchd (auto-start, auto-restart)
+- Background service mode via launchd on macOS (auto-start, auto-restart); on Windows use Task Scheduler or run directly
 - Built-in web dashboard (status, logs, WeChat QR login)
-- macOS menu bar app for quick daemon control
+- Cross-platform system tray app (macOS / Windows / Linux) for quick daemon control
 - Structured logging with configurable levels
 - Proxy injection for LAN/corporate environments (RFC-1918 auto-bypass)
 
@@ -191,7 +193,9 @@ agentline service status       # check PID & health
 agentline service logs --tail  # stream logs
 ```
 
-### Menu Bar (macOS)
+> On Windows, run `agentline run` directly or use Task Scheduler.
+
+### System Tray (macOS / Windows / Linux)
 
 ```bash
 agentline-tray
@@ -203,7 +207,7 @@ agentline-tray
 git clone https://github.com/seven-tt/agentline
 cd agentline
 cargo build --release --bin agentline        # CLI
-cargo build --release --bin agentline-tray   # Tray (macOS)
+cargo build --release --bin agentline-tray   # Tray (macOS / Windows / Linux)
 ```
 
 Then copy the binary from `target/release/` to your `$PATH`.
@@ -218,7 +222,7 @@ The bridge is a `tokio::select!`-driven event loop that multiplexes between the 
 4. **Streaming response** → agent updates (`AgentUpdate`) streamed back, throttled, and formatted per IM platform
 5. **Permission flow** → agent requests permission → bridge renders interactive prompt → user replies → bridge resolves
 
-Process lifecycle is managed at the OS level: `setsid` creates isolated sessions, `kill_session` reaps entire trees (even after `setpgid` escapes), and `kill_on_drop` provides belt-and-suspenders safety.
+Process lifecycle is managed at the OS level: on Unix, `setsid` creates isolated sessions and `kill_session` reaps entire trees (even after `setpgid` escapes); on Windows, `sysinfo` walks the process tree for equivalent cleanup. `kill_on_drop` provides belt-and-suspenders safety on all platforms.
 
 ## Acknowledgements
 
