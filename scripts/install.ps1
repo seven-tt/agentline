@@ -3,45 +3,90 @@
 
 $ErrorActionPreference = "Stop"
 
-$RepoUrl = "https://github.com/seven-tt/agentline"
+$Repo = "seven-tt/agentline"
+$RepoUrl = "https://github.com/$Repo"
+$Label = "win-x64"
 
-# ── check Rust ───────────────────────────────────────────────────
-if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-    Write-Host "Rust toolchain not found." -ForegroundColor Red
-    Write-Host "Install it first: https://rustup.rs" -ForegroundColor Yellow
-    exit 1
-}
-
-$rustVersion = (rustc --version) -replace 'rustc\s+', '' -replace '\s.*', ''
-Write-Host "Rust $rustVersion detected" -ForegroundColor Green
-
-# ── get source ───────────────────────────────────────────────────
-if ((Test-Path "Cargo.toml") -and (Test-Path "crates")) {
-    $sourceDir = (Get-Location).Path
-    Write-Host "Using current directory as source"
-} else {
-    $sourceDir = Join-Path ([System.IO.Path]::GetTempPath()) "agentline-install"
-    if (Test-Path $sourceDir) { Remove-Item -Recurse -Force $sourceDir }
-    Write-Host "Cloning $RepoUrl ..."
-    git clone --depth 1 "$RepoUrl.git" $sourceDir
-    Set-Location $sourceDir
-}
-
-# ── build ────────────────────────────────────────────────────────
-Write-Host "Building agentline ..." -ForegroundColor Cyan
-cargo build --release --package agentline
-
-Write-Host "Building agentline-tray ..." -ForegroundColor Cyan
-cargo build --release --package agentline-tray
-
-# ── install binaries ─────────────────────────────────────────────
+# ── install dir ──────────────────────────────────────────────────
 $installDir = Join-Path $env:LOCALAPPDATA "agentline\bin"
 if (-not (Test-Path $installDir)) { New-Item -ItemType Directory -Path $installDir -Force | Out-Null }
 
-Copy-Item "target\release\agentline.exe" (Join-Path $installDir "agentline.exe") -Force
-Copy-Item "target\release\agentline-tray.exe" (Join-Path $installDir "agentline-tray.exe") -Force
+# ── try downloading prebuilt binary from GitHub Releases ─────────
+function Download-Binary {
+    param([string]$BinName)
 
-# add to user PATH if needed
+    try {
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -ErrorAction Stop
+        $tag = $release.tag_name
+        $version = $tag.TrimStart("v")
+        $assetName = "$BinName-$version-$Label.exe"
+        $url = "$RepoUrl/releases/download/$tag/$assetName"
+        $dest = Join-Path $installDir "$BinName.exe"
+
+        Write-Host "Downloading $assetName ..." -ForegroundColor Cyan
+        Invoke-WebRequest -Uri $url -OutFile $dest -ErrorAction Stop
+        Write-Host "Installed $BinName $version -> $dest" -ForegroundColor Green
+        return $true
+    } catch {
+        Write-Host "Download failed, will try building from source." -ForegroundColor Yellow
+        return $false
+    }
+}
+
+# ── try prebuilt first ───────────────────────────────────────────
+$needBuild = $false
+
+if (-not (Download-Binary "agentline")) {
+    $needBuild = $true
+}
+
+if (-not (Download-Binary "agentline-tray")) {
+    $needBuild = $true
+}
+
+# ── fallback: build from source ──────────────────────────────────
+if ($needBuild) {
+    Write-Host ""
+    Write-Host "Falling back to building from source ..." -ForegroundColor Yellow
+
+    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+        Write-Host "Rust toolchain not found." -ForegroundColor Red
+        Write-Host "Install it first: https://rustup.rs" -ForegroundColor Yellow
+        exit 1
+    }
+
+    $rustVersion = (rustc --version) -replace 'rustc\s+', '' -replace '\s.*', ''
+    Write-Host "Rust $rustVersion detected" -ForegroundColor Green
+
+    if ((Test-Path "Cargo.toml") -and (Test-Path "crates")) {
+        $sourceDir = (Get-Location).Path
+        Write-Host "Using current directory as source"
+    } else {
+        $sourceDir = Join-Path ([System.IO.Path]::GetTempPath()) "agentline-install"
+        if (Test-Path $sourceDir) { Remove-Item -Recurse -Force $sourceDir }
+        Write-Host "Cloning $RepoUrl ..."
+        git clone --depth 1 "$RepoUrl.git" $sourceDir
+        Set-Location $sourceDir
+    }
+
+    $cliBin = Join-Path $installDir "agentline.exe"
+    if (-not (Test-Path $cliBin)) {
+        Write-Host "Building agentline ..." -ForegroundColor Cyan
+        cargo build --release --package agentline
+        Copy-Item "target\release\agentline.exe" $cliBin -Force
+        Write-Host "Installed agentline -> $cliBin" -ForegroundColor Green
+    }
+
+    $trayBin = Join-Path $installDir "agentline-tray.exe"
+    if (-not (Test-Path $trayBin)) {
+        Write-Host "Building agentline-tray ..." -ForegroundColor Cyan
+        cargo build --release --package agentline-tray
+        Copy-Item "target\release\agentline-tray.exe" $trayBin -Force
+        Write-Host "Installed agentline-tray -> $trayBin" -ForegroundColor Green
+    }
+}
+
+# ── add to user PATH if needed ───────────────────────────────────
 $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
 if ($userPath -notlike "*$installDir*") {
     [Environment]::SetEnvironmentVariable("PATH", "$userPath;$installDir", "User")
@@ -49,18 +94,23 @@ if ($userPath -notlike "*$installDir*") {
     Write-Host "  Restart your terminal for PATH changes to take effect."
 }
 
-Write-Host "Installed agentline -> $installDir\agentline.exe" -ForegroundColor Green
-Write-Host "Installed agentline-tray -> $installDir\agentline-tray.exe" -ForegroundColor Green
-
 # ── init config ──────────────────────────────────────────────────
 $configDir = Join-Path $env:USERPROFILE ".agentline"
 $configFile = Join-Path $configDir "config.toml"
 
 if (-not (Test-Path $configFile)) {
     if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir -Force | Out-Null }
-    Copy-Item (Join-Path $sourceDir "config.example.toml") $configFile
-    Write-Host "Created default config at $configFile" -ForegroundColor Green
-    Write-Host "  Edit it to set IM credentials and agent backend, then run 'agentline'."
+    $exampleConfig = $null
+    if (Test-Path "config.example.toml") {
+        $exampleConfig = "config.example.toml"
+    } elseif ($sourceDir -and (Test-Path (Join-Path $sourceDir "config.example.toml"))) {
+        $exampleConfig = Join-Path $sourceDir "config.example.toml"
+    }
+    if ($exampleConfig) {
+        Copy-Item $exampleConfig $configFile
+        Write-Host "Created default config at $configFile" -ForegroundColor Green
+        Write-Host "  Edit it to set IM credentials and agent backend, then run 'agentline'."
+    }
 } else {
     Write-Host "Config already exists at $configFile"
 }
