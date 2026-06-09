@@ -15,12 +15,18 @@ fn home() -> Result<PathBuf> {
     dirs::home_dir().ok_or_else(|| anyhow::anyhow!("could not determine home dir"))
 }
 
+#[cfg(unix)]
 fn current_uid() -> u32 {
     unsafe extern "C" {
         fn getuid() -> u32;
     }
     // SAFETY: getuid is a pure read of the process's real user id.
     unsafe { getuid() }
+}
+
+#[cfg(not(unix))]
+fn current_uid() -> u32 {
+    0
 }
 
 pub fn plist_path() -> Result<PathBuf> {
@@ -223,7 +229,10 @@ pub fn show_logs(tail: bool) -> Result<()> {
 
 fn macos_only() -> Result<()> {
     if !cfg!(target_os = "macos") {
-        bail!("agentline service is only implemented for macOS right now");
+        bail!(
+            "agentline service is only implemented for macOS right now. \
+             On Windows, run `agentline run` directly or use Task Scheduler."
+        );
     }
     Ok(())
 }

@@ -55,30 +55,29 @@ async fn handle_event(
     Json(payload): Json<EventCallback>,
 ) -> impl IntoResponse {
     // URL verification challenge
-    if payload.is_url_verification() {
-        if let Some(challenge) = payload.challenge {
-            if !state.cfg.verification_token.is_empty() {
-                if let Some(ref token) = payload.token {
-                    if token != &state.cfg.verification_token {
-                        tracing::warn!("feishu challenge: token mismatch");
-                        return (StatusCode::FORBIDDEN, Json(serde_json::json!({})));
-                    }
-                }
-            }
-            return (
-                StatusCode::OK,
-                Json(serde_json::to_value(ChallengeResp { challenge }).unwrap()),
-            );
+    if payload.is_url_verification()
+        && let Some(challenge) = payload.challenge
+    {
+        if !state.cfg.verification_token.is_empty()
+            && let Some(ref token) = payload.token
+            && token != &state.cfg.verification_token
+        {
+            tracing::warn!("feishu challenge: token mismatch");
+            return (StatusCode::FORBIDDEN, Json(serde_json::json!({})));
         }
+        return (
+            StatusCode::OK,
+            Json(serde_json::to_value(ChallengeResp { challenge }).unwrap()),
+        );
     }
 
     // Verify event token
-    if let Some(ref header) = payload.header {
-        if !state.cfg.verification_token.is_empty() && header.token != state.cfg.verification_token
-        {
-            tracing::warn!(event_id=%header.event_id, "feishu event: token mismatch");
-            return (StatusCode::FORBIDDEN, Json(serde_json::json!({})));
-        }
+    if let Some(ref header) = payload.header
+        && !state.cfg.verification_token.is_empty()
+        && header.token != state.cfg.verification_token
+    {
+        tracing::warn!(event_id=%header.event_id, "feishu event: token mismatch");
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({})));
     }
 
     // Only handle im.message.receive_v1
@@ -90,10 +89,10 @@ async fn handle_event(
         return (StatusCode::OK, Json(serde_json::json!({})));
     }
 
-    if let Some(event) = payload.event {
-        if let Err(e) = dispatch_message(&state, event.sender, event.message).await {
-            tracing::warn!(error=%e, "feishu dispatch message failed");
-        }
+    if let Some(event) = payload.event
+        && let Err(e) = dispatch_message(&state, event.sender, event.message).await
+    {
+        tracing::warn!(error=%e, "feishu dispatch message failed");
     }
 
     (StatusCode::OK, Json(serde_json::json!({})))

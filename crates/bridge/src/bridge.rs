@@ -557,10 +557,8 @@ impl Bridge {
         };
 
         // Only notify if this is a subsequent message and a session already exists.
-        if !was_empty {
-            if let Some(tag) = self.state.lock().await.current.as_ref().map(|a| a.tag()) {
-                self.send(&peer, &t!("bridge.queued", tag = tag)).await?;
-            }
+        if !was_empty && let Some(tag) = self.state.lock().await.current.as_ref().map(|a| a.tag()) {
+            self.send(&peer, &t!("bridge.queued", tag = tag)).await?;
         }
 
         start_next_if_idle(
@@ -627,10 +625,10 @@ async fn ensure_session_static(
             }
             Some((a.session_id.clone(), a.tag()))
         });
-        if reuse.is_some() {
-            if let Some(a) = s.current.as_mut() {
-                a.last_active = Instant::now();
-            }
+        if reuse.is_some()
+            && let Some(a) = s.current.as_mut()
+        {
+            a.last_active = Instant::now();
         }
         (target, reuse)
     };
@@ -926,11 +924,10 @@ async fn run_prompt_task(
                             tracing::error!(error=%e, "send_event StreamChunk failed");
                         }
                     }
-                    if is_final {
-                        if let Err(e) = im.send_event(&peer, &MessageEvent::StreamEnd).await {
-                            reply_send_ok = false;
-                            tracing::error!(error=%e, "send_event StreamEnd failed");
-                        }
+                    if is_final && let Err(e) = im.send_event(&peer, &MessageEvent::StreamEnd).await
+                    {
+                        reply_send_ok = false;
+                        tracing::error!(error=%e, "send_event StreamEnd failed");
                     }
                     continue;
                 }
@@ -1083,11 +1080,9 @@ async fn run_prompt_task(
                             let mut text =
                                 format!("{tag} {}{suffix}", crate::format::tool_label(k, &l));
                             // On failure, append the tool's own error output.
-                            if !ok {
-                                if let Some(err) = summary.filter(|s| !s.is_empty()) {
-                                    text.push('\n');
-                                    text.push_str(&crate::format::truncate(&err, 800));
-                                }
+                            if !ok && let Some(err) = summary.filter(|s| !s.is_empty()) {
+                                text.push('\n');
+                                text.push_str(&crate::format::truncate(&err, 800));
                             }
                             MessageEvent::ToolEnd {
                                 id,
@@ -1189,10 +1184,11 @@ fn parse_elicit_response(text: &str, schema: Option<&[ElicitField]>) -> serde_js
     };
     match &field.field_type {
         ElicitFieldType::SingleSelect { options } => {
-            if let Ok(n) = text.parse::<usize>() {
-                if n >= 1 && n <= options.len() {
-                    return serde_json::Value::String(options[n - 1].value.clone());
-                }
+            if let Ok(n) = text.parse::<usize>()
+                && n >= 1
+                && n <= options.len()
+            {
+                return serde_json::Value::String(options[n - 1].value.clone());
             }
             serde_json::Value::String(text.to_string())
         }

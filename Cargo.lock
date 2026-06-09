@@ -243,11 +243,13 @@ name = "agentline-bridge"
 version = "1.2.0"
 dependencies = [
  "async-trait",
+ "dirs 5.0.1",
  "futures",
  "libc",
  "rust-i18n",
  "serde",
  "serde_json",
+ "sysinfo",
  "thiserror 1.0.69",
  "time",
  "tokio",
@@ -331,6 +333,7 @@ dependencies = [
 name = "agentline-tray"
 version = "1.2.0"
 dependencies = [
+ "agentline-bridge",
  "anyhow",
  "clap",
  "dirs 5.0.1",
@@ -3452,6 +3455,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "sysinfo"
+version = "0.38.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92ab6a2f8bfe508deb3c6406578252e491d299cbbf3bc0529ecc3313aee4a52f"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

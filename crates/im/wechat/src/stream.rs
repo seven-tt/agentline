@@ -66,13 +66,13 @@ impl WeixinStreamSender {
             .http
             .post_json("/ilink/bot/native_init_stream", &req)
             .await?;
-        if let Some(br) = resp.base_response {
-            if br.ret != 0 {
-                return Err(Error::Api {
-                    ret: br.ret,
-                    msg: br.errmsg.unwrap_or_default(),
-                });
-            }
+        if let Some(br) = resp.base_response
+            && br.ret != 0
+        {
+            return Err(Error::Api {
+                ret: br.ret,
+                msg: br.errmsg.unwrap_or_default(),
+            });
         }
         self.stream_ticket = resp.stream_ticket;
         tracing::debug!(stream_id = %self.client_stream_id, "stream initialized");
@@ -223,23 +223,23 @@ impl WeixinStreamSender {
     }
 
     fn check_abort(&self, resp: &SyncStreamResp) -> Result<()> {
-        if let Some(ref info) = resp.abort_info {
-            if info.abort_type != 0 {
-                return Err(Error::other(format!(
-                    "Stream aborted: type={} code={} msg={}",
-                    info.abort_type,
-                    info.abort_detail_error_code,
-                    info.abort_detail_error_msg.as_deref().unwrap_or("")
-                )));
-            }
+        if let Some(ref info) = resp.abort_info
+            && info.abort_type != 0
+        {
+            return Err(Error::other(format!(
+                "Stream aborted: type={} code={} msg={}",
+                info.abort_type,
+                info.abort_detail_error_code,
+                info.abort_detail_error_msg.as_deref().unwrap_or("")
+            )));
         }
-        if let Some(ref br) = resp.base_response {
-            if br.ret != 0 {
-                return Err(Error::Api {
-                    ret: br.ret,
-                    msg: br.errmsg.clone().unwrap_or_default(),
-                });
-            }
+        if let Some(ref br) = resp.base_response
+            && br.ret != 0
+        {
+            return Err(Error::Api {
+                ret: br.ret,
+                msg: br.errmsg.clone().unwrap_or_default(),
+            });
         }
         Ok(())
     }

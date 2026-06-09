@@ -4,8 +4,9 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-/// SIGKILL an entire process group by pgid (== the agent's pid). No-op for
-/// pgid <= 1. On non-unix this is a no-op (`kill_on_drop` is the fallback).
+/// Kill an entire process group by pgid (== the agent's pid). No-op for
+/// pgid <= 1. On Unix this signals the whole group; on Windows it enumerates
+/// the process tree and terminates each process individually.
 pub fn kill_process_group(pgid: i32) {
     if pgid <= 1 {
         return;
@@ -15,7 +16,11 @@ pub fn kill_process_group(pgid: i32) {
         libc::kill(-pgid, libc::SIGTERM);
         libc::kill(-pgid, libc::SIGKILL);
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        kill_tree(pgid);
+    }
+    #[cfg(not(any(unix, windows)))]
     let _ = pgid;
 }
 
@@ -23,8 +28,8 @@ pub fn kill_process_group(pgid: i32) {
 /// child was spawned via `setsid`). Enumerates live pids and signals the matches
 /// (SIGTERM then SIGKILL). No-op for `sid <= 1`.
 ///
-/// macOS-only enumeration via `proc_listpids`; other platforms fall back to the
-/// process-group kill alone.
+/// macOS implementation uses `proc_listpids`; on Windows this falls back to
+/// `kill_process_group`; other platforms are no-ops.
 #[cfg(target_os = "macos")]
 pub fn kill_session(sid: i32) {
     if sid <= 1 {
@@ -60,7 +65,12 @@ pub fn kill_session(sid: i32) {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn kill_session(_sid: i32) {}
+pub fn kill_session(sid: i32) {
+    #[cfg(windows)]
+    kill_process_group(sid);
+    #[cfg(not(windows))]
+    let _ = sid;
+}
 
 /// Write the agent's PID to a file so it can be reaped on next startup.
 pub fn write_pid_file(path: &Path, pid: u32) {
@@ -87,11 +97,7 @@ pub fn cleanup_orphaned_agent(pid_file: &Path) {
             return;
         }
     };
-    #[cfg(unix)]
-    let alive = unsafe { libc::kill(pid, 0) } == 0;
-    #[cfg(not(unix))]
-    let alive = false;
-    if alive {
+    if process_is_alive(pid) {
         tracing::info!(pid, "killing orphaned agent process tree");
         kill_session(pid);
         kill_process_group(pid);
@@ -99,13 +105,44 @@ pub fn cleanup_orphaned_agent(pid_file: &Path) {
     let _ = std::fs::remove_file(pid_file);
 }
 
+/// Check whether a process with the given PID is currently alive.
+pub fn process_is_alive(pid: i32) -> bool {
+    if pid <= 1 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        (unsafe { libc::kill(pid, 0) } == 0)
+    }
+    #[cfg(windows)]
+    {
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
+        let mut s = System::new_with_specifics(
+            RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
+        );
+        s.refresh_processes(
+            ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(pid as u32)]),
+            true,
+        );
+        s.process(sysinfo::Pid::from_u32(pid as u32)).is_some()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 /// List all direct child PIDs of `parent_pid`.
 ///
-/// macOS implementation uses `proc_listpids(PROC_PPID_ONLY)` which directly
-/// enumerates processes by parent PID. On other platforms returns an empty set.
+/// macOS uses `proc_listpids(PROC_PPID_ONLY)` (single syscall);
+/// Windows/Linux use `sysinfo` to enumerate the process tree.
 #[cfg(target_os = "macos")]
 pub fn list_child_pids(parent_pid: i32) -> HashSet<i32> {
     let mut children = HashSet::new();
+    if parent_pid <= 1 {
+        return children;
+    }
     const PROC_PPID_ONLY: u32 = 6;
     unsafe {
         let cap = libc::proc_listpids(PROC_PPID_ONLY, parent_pid as u32, std::ptr::null_mut(), 0);
@@ -133,12 +170,80 @@ pub fn list_child_pids(parent_pid: i32) -> HashSet<i32> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn list_child_pids(_parent_pid: i32) -> HashSet<i32> {
-    HashSet::new()
+pub fn list_child_pids(parent_pid: i32) -> HashSet<i32> {
+    let mut children = HashSet::new();
+    if parent_pid <= 1 {
+        return children;
+    }
+    #[cfg(windows)]
+    {
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
+        let mut s = System::new_with_specifics(
+            RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
+        );
+        s.refresh_processes(ProcessesToUpdate::All, true);
+        let parent = sysinfo::Pid::from_u32(parent_pid as u32);
+        for (pid, proc_) in s.processes() {
+            if proc_.parent() == Some(parent) {
+                children.insert(pid.as_u32() as i32);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = parent_pid;
+    children
 }
 
 /// Return child PIDs of `parent_pid` that were NOT in the `before` snapshot.
 pub fn find_new_child_pids(parent_pid: i32, before: &HashSet<i32>) -> Vec<i32> {
     let current = list_child_pids(parent_pid);
     current.difference(before).copied().collect()
+}
+
+/// Kill a single process by PID (cross-platform).
+pub fn kill_single_process(pid: u32) {
+    if pid <= 1 {
+        return;
+    }
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
+    }
+    #[cfg(windows)]
+    {
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
+        let spid = sysinfo::Pid::from_u32(pid);
+        let mut s = System::new_with_specifics(
+            RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
+        );
+        s.refresh_processes(ProcessesToUpdate::Some(&[spid]), true);
+        if let Some(p) = s.process(spid) {
+            p.kill();
+        }
+    }
+}
+
+#[cfg(windows)]
+fn kill_tree(root_pid: i32) {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
+    let mut s = System::new_with_specifics(
+        RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
+    );
+    s.refresh_processes(ProcessesToUpdate::All, true);
+    let root = sysinfo::Pid::from_u32(root_pid as u32);
+    let mut to_kill = vec![root];
+    let mut killed = HashSet::new();
+    while let Some(pid) = to_kill.pop() {
+        if !killed.insert(pid) {
+            continue;
+        }
+        for (child_pid, proc_) in s.processes() {
+            if proc_.parent() == Some(pid) {
+                to_kill.push(*child_pid);
+            }
+        }
+        if let Some(p) = s.process(pid) {
+            p.kill();
+        }
+    }
 }

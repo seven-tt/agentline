@@ -301,6 +301,13 @@ fn spawn_agent(cfg: &AcpBackendConfig) -> Result<tokio::process::Child> {
             Ok(())
         });
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NEW_PROCESS_GROUP (0x200) lets us treat the child's pid as the
+        // process-group id and terminate the whole tree on shutdown.
+        cmd.creation_flags(0x00000200);
+    }
 
     for k in &cfg.remove_env {
         cmd.env_remove(k);
@@ -564,6 +571,7 @@ mod proxy_env_tests {
 
     /// The direct child must see the `NO_PROXY` we inject (with the LAN ranges),
     /// so LAN/local services bypass the global proxy.
+    #[cfg(unix)]
     #[tokio::test]
     async fn direct_child_inherits_injected_no_proxy() {
         let out = spawn_and_capture(r#"printf '%s' "$NO_PROXY""#).await;
@@ -576,6 +584,7 @@ mod proxy_env_tests {
     /// The agent runs git inside a *nested* shell (its bash tool). A normal
     /// grandchild inherits the parent env, so NO_PROXY must reach it too — if it
     /// doesn't, the regression is the agent scrubbing env, not our injection.
+    #[cfg(unix)]
     #[tokio::test]
     async fn nested_shell_grandchild_inherits_no_proxy() {
         let out = spawn_and_capture(r#"/bin/sh -c 'printf "%s" "$NO_PROXY"'"#).await;

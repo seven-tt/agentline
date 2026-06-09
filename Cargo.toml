@@ -28,7 +28,7 @@ homepage = "https://github.com/seven-tt/agentline"
 authors = ["seven"]
 keywords = ["chatops", "claude-code", "codex", "hermes", "telegram"]
 categories = ["command-line-utilities", "development-tools"]
-rust-version = "1.85"
+rust-version = "1.89"
 readme = "README.md"
 
 [workspace.dependencies]
@@ -93,6 +93,9 @@ which = "7"
 # desktop tray (macOS / Windows / Linux menu-bar icon)
 tray-icon = { version = "0.24", default-features = false }
 tao = "0.35"
+
+# cross-platform process management (Windows only — macOS/Linux use libc)
+sysinfo = { version = "0.38", default-features = false }
 
 # internal
 agentline-bridge = { path = "crates/bridge" }

@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    name: build (${{ matrix.target }})
+    name: build (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -15,12 +15,24 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            label: linux-x64
+            ext: ""
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
+            label: linux-arm64
+            ext: ""
           - target: x86_64-apple-darwin
             os: macos-latest
+            label: mac-x64
+            ext: ""
           - target: aarch64-apple-darwin
             os: macos-latest
+            label: mac-arm64
+            ext: ""
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            label: win-x64
+            ext: .exe
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -35,16 +47,80 @@ jobs:
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
       - run: cargo build --release --bin agentline --target ${{ matrix.target }}
       - name: package
+        shell: bash
         run: |
+          VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/agentline dist/agentline-${{ matrix.target }}
+          cp "target/${{ matrix.target }}/release/agentline${{ matrix.ext }}" \
+             "dist/agentline-${VERSION}-${{ matrix.label }}${{ matrix.ext }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: agentline-${{ matrix.target }}
-          path: dist/agentline-${{ matrix.target }}
+          name: agentline-${{ matrix.label }}
+          path: dist/*
+
+  sign-macos:
+    name: sign + notarize (${{ matrix.label }})
+    needs: build
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: mac-x64
+          - label: mac-arm64
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentline-${{ matrix.label }}
+          path: dist
+
+      - name: import certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="build.keychain"
+          KEYCHAIN_PASSWORD="actions"
+          echo "$CERTIFICATE_P12" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import certificate.p12 -k "$KEYCHAIN" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          rm certificate.p12
+
+      - name: sign binary
+        env:
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          BINARY=$(ls dist/agentline-*-${{ matrix.label }})
+          chmod +x "$BINARY"
+          codesign --force --options runtime --sign "$SIGNING_IDENTITY" --timestamp "$BINARY"
+          codesign --verify --verbose "$BINARY"
+
+      - name: notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          BINARY=$(ls dist/agentline-*-${{ matrix.label }})
+          ZIP="agentline-${{ matrix.label }}.zip"
+          ditto -c -k "$BINARY" "$ZIP"
+          xcrun notarytool submit "$ZIP" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentline-${{ matrix.label }}
+          path: dist/*
+          overwrite: true
 
   release:
-    needs: build
+    needs: [build, sign-macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:

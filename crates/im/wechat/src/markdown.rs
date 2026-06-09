@@ -85,18 +85,16 @@ impl StreamingMarkdownFilter {
             }
         }
 
-        if eof {
-            if let Some(ref inl) = self.inl.take() {
-                let marker = match inl.ty {
-                    InlineType::Image => "![",
-                    InlineType::Bold3 => "***",
-                    InlineType::Italic => "*",
-                    InlineType::Ubold3 => "___",
-                    InlineType::Uitalic => "_",
-                };
-                out.push_str(marker);
-                out.push_str(&inl.acc);
-            }
+        if eof && let Some(ref inl) = self.inl.take() {
+            let marker = match inl.ty {
+                InlineType::Image => "![",
+                InlineType::Bold3 => "***",
+                InlineType::Italic => "*",
+                InlineType::Ubold3 => "___",
+                InlineType::Uitalic => "_",
+            };
+            out.push_str(marker);
+            out.push_str(&inl.acc);
         }
         out
     }
@@ -171,14 +169,13 @@ impl StreamingMarkdownFilter {
 
         if self.buf.starts_with('#') {
             let n = self.buf.chars().take_while(|&c| c == '#').count();
-            if (5..=6).contains(&n) {
-                if let Some(rest) = self.buf.get(n..) {
-                    if let Some(stripped) = rest.strip_prefix(' ') {
-                        self.buf = stripped.to_string();
-                        self.sol = false;
-                        return String::new();
-                    }
-                }
+            if (5..=6).contains(&n)
+                && let Some(rest) = self.buf.get(n..)
+                && let Some(stripped) = rest.strip_prefix(' ')
+            {
+                self.buf = stripped.to_string();
+                self.sol = false;
+                return String::new();
             }
             self.sol = false;
             return String::new();
@@ -192,32 +189,32 @@ impl StreamingMarkdownFilter {
             return String::new();
         }
 
-        if let Some(first) = self.buf.chars().next() {
-            if first == '-' || first == '*' || first == '_' {
-                let mut bp = 0;
-                for (pos, c) in self.buf.char_indices() {
-                    if c != first && c != ' ' {
-                        break;
-                    }
-                    bp = pos + c.len_utf8();
+        if let Some(first) = self.buf.chars().next()
+            && (first == '-' || first == '*' || first == '_')
+        {
+            let mut bp = 0;
+            for (pos, c) in self.buf.char_indices() {
+                if c != first && c != ' ' {
+                    break;
                 }
-                if bp == self.buf.len() && !eof {
-                    return String::new();
-                }
-                if bp < self.buf.len() && self.buf[bp..].starts_with('\n') {
-                    let count = self.buf[..bp].chars().filter(|&c| c == first).count();
-                    if count >= 3 {
-                        let line = self.buf.drain(..bp).collect::<String>();
-                        if self.buf.starts_with('\n') {
-                            self.buf.remove(0);
-                        }
-                        self.sol = true;
-                        return line;
-                    }
-                }
-                self.sol = false;
+                bp = pos + c.len_utf8();
+            }
+            if bp == self.buf.len() && !eof {
                 return String::new();
             }
+            if bp < self.buf.len() && self.buf[bp..].starts_with('\n') {
+                let count = self.buf[..bp].chars().filter(|&c| c == first).count();
+                if count >= 3 {
+                    let line = self.buf.drain(..bp).collect::<String>();
+                    if self.buf.starts_with('\n') {
+                        self.buf.remove(0);
+                    }
+                    self.sol = true;
+                    return line;
+                }
+            }
+            self.sol = false;
+            return String::new();
         }
 
         self.sol = false;

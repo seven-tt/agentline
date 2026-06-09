@@ -114,10 +114,10 @@ pub async fn download_image(
     let label = "image";
 
     let mut media_clone = media.clone();
-    if media_clone.aes_key.is_none() {
-        if let Some(key) = resolve_image_aes_key(img) {
-            media_clone.aes_key = Some(key);
-        }
+    if media_clone.aes_key.is_none()
+        && let Some(key) = resolve_image_aes_key(img)
+    {
+        media_clone.aes_key = Some(key);
     }
 
     let data = match download_media(http, &media_clone, label).await {

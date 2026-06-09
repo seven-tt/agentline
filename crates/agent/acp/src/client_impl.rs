@@ -455,10 +455,10 @@ fn extract_what(tool_call: &acp::ToolCallUpdate) -> String {
         }
 
         // Fallback: compact JSON of the full input (untruncated, up to 2000 chars)
-        if let Ok(json) = serde_json::to_string(raw) {
-            if json.len() <= 2000 {
-                return tool_label(mapped.unwrap_or(ToolKind::Other), &json);
-            }
+        if let Ok(json) = serde_json::to_string(raw)
+            && json.len() <= 2000
+        {
+            return tool_label(mapped.unwrap_or(ToolKind::Other), &json);
         }
     }
 

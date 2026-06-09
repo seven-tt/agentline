@@ -524,15 +524,15 @@ impl AppConfig {
 }
 
 pub fn expand_tilde(p: &str) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
+    if let Some(rest) = p.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest);
     }
-    if p == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
-        }
+    if p == "~"
+        && let Some(home) = dirs::home_dir()
+    {
+        return home;
     }
     PathBuf::from(p)
 }

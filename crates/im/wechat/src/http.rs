@@ -83,10 +83,10 @@ impl HttpClient {
         if let Ok(v) = HeaderValue::from_str(&uin) {
             h.insert("X-WECHAT-UIN", v);
         }
-        if let Some(t) = self.bot_token.read().await.as_ref() {
-            if let Ok(v) = HeaderValue::from_str(&format!("Bearer {t}")) {
-                h.insert(AUTHORIZATION, v);
-            }
+        if let Some(t) = self.bot_token.read().await.as_ref()
+            && let Ok(v) = HeaderValue::from_str(&format!("Bearer {t}"))
+        {
+            h.insert(AUTHORIZATION, v);
         }
         h
     }

@@ -79,17 +79,15 @@ fn matches_token(s: &str, options: &[&str]) -> bool {
 }
 
 fn expand_tilde(p: &str) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            let mut buf = PathBuf::from(home);
-            buf.push(rest);
-            return buf;
-        }
+    if let Some(rest) = p.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest);
     }
-    if p == "~" {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home);
-        }
+    if p == "~"
+        && let Some(home) = dirs::home_dir()
+    {
+        return home;
     }
     PathBuf::from(p)
 }

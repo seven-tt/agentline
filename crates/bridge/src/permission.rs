@@ -116,10 +116,11 @@ impl PermissionPolicy {
 
         match tool_kind {
             ToolKind::Shell => {
-                if let Some(cmd) = extract_shell_cmd(what) {
-                    if !is_blacklisted(cmd) && self.granted_shell_cmds.contains(cmd) {
-                        return PermissionDecision::AutoApprove(AutoApproveReason::SessionGrant);
-                    }
+                if let Some(cmd) = extract_shell_cmd(what)
+                    && !is_blacklisted(cmd)
+                    && self.granted_shell_cmds.contains(cmd)
+                {
+                    return PermissionDecision::AutoApprove(AutoApproveReason::SessionGrant);
                 }
                 PermissionDecision::Ask
             }
@@ -141,10 +142,10 @@ impl PermissionPolicy {
         }
         match tool_kind {
             ToolKind::Shell => {
-                if let Some(cmd) = extract_shell_cmd(what) {
-                    if !is_blacklisted(cmd) {
-                        self.granted_shell_cmds.insert(cmd.to_string());
-                    }
+                if let Some(cmd) = extract_shell_cmd(what)
+                    && !is_blacklisted(cmd)
+                {
+                    self.granted_shell_cmds.insert(cmd.to_string());
                 }
             }
             ToolKind::Other => {}
@@ -167,10 +168,10 @@ impl PermissionPolicy {
         }
         match tool_kind {
             ToolKind::Shell => {
-                if let Some(cmd) = extract_shell_cmd(what) {
-                    if is_blacklisted(cmd) {
-                        return PermResponse::Once;
-                    }
+                if let Some(cmd) = extract_shell_cmd(what)
+                    && is_blacklisted(cmd)
+                {
+                    return PermResponse::Once;
                 }
                 resp
             }

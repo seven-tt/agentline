@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use agentline_bridge::process;
 use anyhow::{Context, Result, bail};
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -200,12 +201,22 @@ fn run_tray() -> Result<()> {
                         tracing::warn!(error=%e, "restart failed");
                     }
                 } else if ev.id == dashboard_id {
-                    let _ = Command::new("open").arg("http://127.0.0.1:7681").status();
+                    open_url("http://127.0.0.1:7681");
                 }
             }
             while let Ok(_e) = tray_rx.try_recv() {}
         }
     });
+}
+
+/// Open a URL in the default browser (cross-platform).
+fn open_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    let _ = Command::new("open").arg(url).status();
+    #[cfg(windows)]
+    let _ = Command::new("cmd").args(["/c", "start", url]).status();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = Command::new("xdg-open").arg(url).status();
 }
 
 // ─── orphan cleanup ──────────────────────────────────────────────
@@ -226,19 +237,14 @@ fn cleanup_orphaned_agent() {
             return;
         }
     };
-    #[cfg(unix)]
-    {
-        if unsafe { libc::kill(pid, 0) } != 0 {
-            let _ = std::fs::remove_file(&pid_file);
-            return;
-        }
-        tracing::info!(pid, "killing orphaned agent process tree");
-        kill_agent_session(pid);
-        unsafe {
-            libc::kill(-pid, libc::SIGTERM);
-            libc::kill(-pid, libc::SIGKILL);
-        }
+    if !process::process_is_alive(pid) {
+        let _ = std::fs::remove_file(&pid_file);
+        return;
     }
+    tracing::info!(pid, "killing orphaned agent process tree");
+    #[cfg(target_os = "macos")]
+    kill_agent_session(pid);
+    process::kill_process_group(pid);
     let _ = std::fs::remove_file(&pid_file);
 }
 
@@ -276,7 +282,7 @@ fn kill_agent_session(sid: i32) {
     }
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(not(target_os = "macos"))]
 fn kill_agent_session(_sid: i32) {}
 
 // ─── stale daemon cleanup ────────────────────────────────────────
@@ -295,13 +301,12 @@ fn kill_stale_daemon() {
         Ok(p) if p > 1 => p,
         _ => return,
     };
+    if !process::process_is_alive(pid) {
+        return;
+    }
+    tracing::info!(pid, "killing stale daemon from lock file");
     #[cfg(unix)]
     {
-        // Check if the process is alive.
-        if unsafe { libc::kill(pid, 0) } != 0 {
-            return;
-        }
-        tracing::info!(pid, "killing stale daemon from lock file");
         unsafe {
             libc::kill(pid, libc::SIGTERM);
         }
@@ -324,6 +329,11 @@ fn kill_stale_daemon() {
             }
         }
     }
+    #[cfg(windows)]
+    {
+        process::kill_single_process(pid as u32);
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 // ─── daemon lifecycle ────────────────────────────────────────────
@@ -331,7 +341,12 @@ fn kill_stale_daemon() {
 fn agentline_bin() -> Result<PathBuf> {
     let exe = std::env::current_exe().context("current_exe")?;
     let dir = exe.parent().context("no parent dir")?;
-    let bin = dir.join("agentline");
+    let name = if cfg!(windows) {
+        "agentline.exe"
+    } else {
+        "agentline"
+    };
+    let bin = dir.join(name);
     if !bin.exists() {
         bail!("agentline not found at {}", bin.display());
     }
@@ -363,6 +378,7 @@ fn spawn_daemon() -> Result<Child> {
 
 /// Get the user's real PATH by sourcing their login shell profile.
 /// Falls back to a manually constructed path if the shell call fails.
+#[cfg(unix)]
 fn enriched_path() -> String {
     // Ask an interactive login shell — reads .zprofile AND .zshrc so user
     // customizations (NVM, kimi, etc.) are included.
@@ -371,17 +387,17 @@ fn enriched_path() -> String {
         vec!["-l", "-c", "echo $PATH"],
     ] {
         for shell in &["/bin/zsh", "/bin/bash"] {
-            if let Ok(out) = Command::new(shell).args(args).env("TERM", "dumb").output() {
-                if out.status.success() {
-                    let p = String::from_utf8_lossy(&out.stdout)
-                        .lines()
-                        .find(|l| l.contains('/'))
-                        .unwrap_or("")
-                        .trim()
-                        .to_string();
-                    if !p.is_empty() {
-                        return p;
-                    }
+            if let Ok(out) = Command::new(shell).args(args).env("TERM", "dumb").output()
+                && out.status.success()
+            {
+                let p = String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .find(|l| l.contains('/'))
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if !p.is_empty() {
+                    return p;
                 }
             }
         }
@@ -413,6 +429,11 @@ fn enriched_path() -> String {
     paths.join(":")
 }
 
+#[cfg(windows)]
+fn enriched_path() -> String {
+    std::env::var("PATH").unwrap_or_default()
+}
+
 fn kill_daemon(handle: &ChildHandle) {
     if let Some(mut c) = handle.lock().unwrap().take() {
         // SIGTERM first so the daemon runs its shutdown handler and kills its
@@ -422,6 +443,8 @@ fn kill_daemon(handle: &ChildHandle) {
         unsafe {
             libc::kill(c.id() as i32, libc::SIGTERM);
         }
+        #[cfg(windows)]
+        process::kill_single_process(c.id());
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             match c.try_wait() {

@@ -421,10 +421,10 @@ impl WechatChannel {
                     tracing::error!(error=%e, "flush_tool_batch send failed");
                 }
             }
-            if !stream_buf.is_empty() {
-                if let Err(e) = self.send_plain(&peer, &stream_buf).await {
-                    tracing::error!(error=%e, "flush_tool_batch stream_buf send failed");
-                }
+            if !stream_buf.is_empty()
+                && let Err(e) = self.send_plain(&peer, &stream_buf).await
+            {
+                tracing::error!(error=%e, "flush_tool_batch stream_buf send failed");
             }
         }
     }
@@ -511,10 +511,10 @@ async fn flush_and_end(_http: &HttpClient, active: &mut ActiveStream) -> String 
         active.buffered_text.push_str(&remaining);
     }
 
-    if let Some(ref mut sender) = active.sender {
-        if !sender.is_ended() {
-            let _ = sender.end().await;
-        }
+    if let Some(ref mut sender) = active.sender
+        && !sender.is_ended()
+    {
+        let _ = sender.end().await;
     }
 
     std::mem::take(&mut active.buffered_text)
@@ -605,21 +605,21 @@ impl ImChannel for WechatChannel {
 
                 // Streaming mode: send signal + piece.
                 if let Some(ref mut sender) = active.sender {
-                    if !active.signaled {
-                        if let Some(ticket) = sender.ticket() {
-                            if let Err(e) = send::send_stream_signal(
-                                &self.http,
-                                to,
-                                ticket,
-                                sender.client_stream_id(),
-                                "result",
-                            )
-                            .await
-                            {
-                                tracing::error!(error=%e, "send_stream_signal failed");
-                            } else {
-                                active.signaled = true;
-                            }
+                    if !active.signaled
+                        && let Some(ticket) = sender.ticket()
+                    {
+                        if let Err(e) = send::send_stream_signal(
+                            &self.http,
+                            to,
+                            ticket,
+                            sender.client_stream_id(),
+                            "result",
+                        )
+                        .await
+                        {
+                            tracing::error!(error=%e, "send_stream_signal failed");
+                        } else {
+                            active.signaled = true;
                         }
                     }
                     let filtered = active.md_filter.feed(text);

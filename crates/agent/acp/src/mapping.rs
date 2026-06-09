@@ -210,10 +210,10 @@ fn tool_call_content_text(c: ToolCallContent) -> Option<String> {
     if let Some(t) = json.get("text").and_then(|v| v.as_str()) {
         return Some(t.to_string());
     }
-    if let Some(content) = json.get("content") {
-        if let Some(t) = content.get("text").and_then(|v| v.as_str()) {
-            return Some(t.to_string());
-        }
+    if let Some(content) = json.get("content")
+        && let Some(t) = content.get("text").and_then(|v| v.as_str())
+    {
+        return Some(t.to_string());
     }
     None
 }

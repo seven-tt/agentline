@@ -60,35 +60,30 @@ pub async fn run(cfg: AppConfig) -> Result<()> {
 /// daemons against the same IM account. The lock fd is intentionally leaked so
 /// the OS holds it until this process exits.
 fn acquire_single_instance_lock(cfg: &AppConfig) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::io::AsRawFd;
-        let path = crate::config::expand_tilde(&cfg.bridge.state_dir).join("agentline.lock");
-        if let Some(p) = path.parent() {
-            std::fs::create_dir_all(p).ok();
-        }
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(&path)
-            .with_context(|| format!("open lock file {}", path.display()))?;
-        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if rc != 0 {
-            bail!(
-                "another agentline instance is already running (lock held: {}). \
-                 Refusing to start a second daemon.",
-                path.display()
-            );
-        }
-        // Write our PID so the tray can kill us if we become stale.
-        let _ = file.set_len(0);
-        let mut f = &file;
-        let _ = f.write_all(format!("{}", std::process::id()).as_bytes());
-        let _ = f.flush();
-        std::mem::forget(file); // hold the lock for the process lifetime
+    use std::io::Write;
+    let path = crate::config::expand_tilde(&cfg.bridge.state_dir).join("agentline.lock");
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p).ok();
     }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("open lock file {}", path.display()))?;
+    if file.try_lock().is_err() {
+        bail!(
+            "another agentline instance is already running (lock held: {}). \
+             Refusing to start a second daemon.",
+            path.display()
+        );
+    }
+    // Write our PID so the tray can kill us if we become stale.
+    let _ = file.set_len(0);
+    let mut f = &file;
+    let _ = f.write_all(format!("{}", std::process::id()).as_bytes());
+    let _ = f.flush();
+    std::mem::forget(file); // hold the lock for the process lifetime
     Ok(())
 }
 

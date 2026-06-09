@@ -333,25 +333,25 @@ async fn api_channels_set(
     let mut updated = text;
 
     // Write per-IM enable flags
-    if let Some(ref wc) = body.wechat {
-        if let Some(v) = wc.enable {
-            updated = set_toml_bool(&updated, "im.wechat", "enable", v);
-        }
+    if let Some(ref wc) = body.wechat
+        && let Some(v) = wc.enable
+    {
+        updated = set_toml_bool(&updated, "im.wechat", "enable", v);
     }
-    if let Some(ref dt) = body.dingtalk {
-        if let Some(v) = dt.enable {
-            updated = set_toml_bool(&updated, "im.dingtalk", "enable", v);
-        }
+    if let Some(ref dt) = body.dingtalk
+        && let Some(v) = dt.enable
+    {
+        updated = set_toml_bool(&updated, "im.dingtalk", "enable", v);
     }
-    if let Some(ref fs) = body.feishu {
-        if let Some(v) = fs.enable {
-            updated = set_toml_bool(&updated, "im.feishu", "enable", v);
-        }
+    if let Some(ref fs) = body.feishu
+        && let Some(v) = fs.enable
+    {
+        updated = set_toml_bool(&updated, "im.feishu", "enable", v);
     }
-    if let Some(ref tg) = body.telegram {
-        if let Some(v) = tg.enable {
-            updated = set_toml_bool(&updated, "im.telegram", "enable", v);
-        }
+    if let Some(ref tg) = body.telegram
+        && let Some(v) = tg.enable
+    {
+        updated = set_toml_bool(&updated, "im.telegram", "enable", v);
     }
 
     if let Some(ref wc) = body.wechat {
@@ -719,10 +719,10 @@ async fn api_agents_config(
             updated = set_toml_key(&updated, "agent.codex", "approval_mode", v);
         }
     }
-    if let Some(ref q) = body.qoder {
-        if let Some(ref v) = q.personal_access_token {
-            updated = set_toml_key(&updated, "agent.qoder", "personal_access_token", v);
-        }
+    if let Some(ref q) = body.qoder
+        && let Some(ref v) = q.personal_access_token
+    {
+        updated = set_toml_key(&updated, "agent.qoder", "personal_access_token", v);
     }
     if let Some(ref o) = body.opencode {
         if let Some(ref v) = o.base_url {
@@ -732,10 +732,10 @@ async fn api_agents_config(
             updated = set_toml_key(&updated, "agent.opencode", "api_key", v);
         }
     }
-    if let Some(ref k) = body.kimi {
-        if let Some(ref v) = k.access_token {
-            updated = set_toml_key(&updated, "agent.kimi", "access_token", v);
-        }
+    if let Some(ref k) = body.kimi
+        && let Some(ref v) = k.access_token
+    {
+        updated = set_toml_key(&updated, "agent.kimi", "access_token", v);
     }
 
     if let Err(e) = std::fs::write(&path, &updated) {
@@ -1057,10 +1057,10 @@ async fn api_settings_set(
             updated = set_toml_key(&updated, "bridge", "locale", v);
         }
     }
-    if let Some(ref w_in) = body.web {
-        if let Some(ref v) = w_in.bind {
-            updated = set_toml_key(&updated, "web", "bind", v);
-        }
+    if let Some(ref w_in) = body.web
+        && let Some(ref v) = w_in.bind
+    {
+        updated = set_toml_key(&updated, "web", "bind", v);
     }
     if let Some(ref p) = body.proxy {
         if let Some(ref v) = p.http {
@@ -1073,10 +1073,10 @@ async fn api_settings_set(
             updated = set_toml_key(&updated, "proxy", "no_proxy", v);
         }
     }
-    if let Some(ref l) = body.log {
-        if let Some(ref v) = l.level {
-            updated = set_toml_key(&updated, "log", "level", v);
-        }
+    if let Some(ref l) = body.log
+        && let Some(ref v) = l.level
+    {
+        updated = set_toml_key(&updated, "log", "level", v);
     }
 
     if let Err(e) = std::fs::write(&path, &updated) {
