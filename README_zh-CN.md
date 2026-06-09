@@ -163,6 +163,26 @@ http = ""                             # 注入到所有 agent 子进程
 
 完整配置参考见 [`config.example.toml`](config.example.toml)。
 
+## 快速安装
+
+需要 **Rust 1.85+** 和 **macOS / Linux**。
+
+### 无界面版（CLI）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/seven-tt/agentline/main/scripts/install.sh | bash
+```
+
+### 有界面版（macOS 菜单栏）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/seven-tt/agentline/main/scripts/install.sh | bash -s -- --tray
+```
+
+> **Windows** 暂不支持，请使用 [WSL](https://learn.microsoft.com/windows/wsl/) 或从源码构建。
+
+安装完成后，编辑 `~/.agentline/config.toml` 配置 IM 凭证即可使用。
+
 ## 部署
 
 ### 前台运行（开发）
@@ -171,7 +191,7 @@ http = ""                             # 注入到所有 agent 子进程
 agentline
 ```
 
-### 后台服务（生产）
+### 后台服务（生产，macOS）
 
 ```bash
 agentline service install      # launchd plist，开机自启
@@ -182,8 +202,7 @@ agentline service logs --tail  # 实时日志流
 ### 菜单栏（macOS）
 
 ```bash
-cargo install --path crates/tray
-agentline-tray install
+agentline-tray
 ```
 
 ## 从源码构建
@@ -191,11 +210,11 @@ agentline-tray install
 ```bash
 git clone https://github.com/seven-tt/agentline
 cd agentline
-cargo build --release
-./target/release/agentline --help
+cargo build --release --bin agentline        # CLI
+cargo build --release --bin agentline-tray   # 托盘程序（macOS）
 ```
 
-要求：Rust 1.85+，macOS / Linux。
+然后将 `target/release/` 中的二进制文件复制到 `$PATH` 即可。
 
 ## 工作原理
 

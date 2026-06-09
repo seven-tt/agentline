@@ -163,6 +163,26 @@ http = ""                             # injected into all agent subprocesses
 
 See [`config.example.toml`](config.example.toml) for the full reference with all options documented.
 
+## Quick Install
+
+Requires **Rust 1.85+** and **macOS / Linux**.
+
+### Headless (CLI)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/seven-tt/agentline/main/scripts/install.sh | bash
+```
+
+### With UI (macOS Menu Bar)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/seven-tt/agentline/main/scripts/install.sh | bash -s -- --tray
+```
+
+> **Windows** is not yet supported. Use [WSL](https://learn.microsoft.com/windows/wsl/) or build from source.
+
+After install, edit `~/.agentline/config.toml` to set your IM credentials.
+
 ## Deployment
 
 ### Foreground (development)
@@ -171,7 +191,7 @@ See [`config.example.toml`](config.example.toml) for the full reference with all
 agentline
 ```
 
-### Background Service (production)
+### Background Service (production, macOS)
 
 ```bash
 agentline service install      # launchd plist, auto-start on boot
@@ -182,8 +202,7 @@ agentline service logs --tail  # stream logs
 ### Menu Bar (macOS)
 
 ```bash
-cargo install --path crates/tray
-agentline-tray install
+agentline-tray
 ```
 
 ## Building from Source
@@ -191,11 +210,11 @@ agentline-tray install
 ```bash
 git clone https://github.com/seven-tt/agentline
 cd agentline
-cargo build --release
-./target/release/agentline --help
+cargo build --release --bin agentline        # CLI
+cargo build --release --bin agentline-tray   # Tray (macOS)
 ```
 
-Requirements: Rust 1.85+, macOS / Linux.
+Then copy the binary from `target/release/` to your `$PATH`.
 
 ## How It Works
 
