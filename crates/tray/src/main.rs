@@ -282,9 +282,6 @@ fn kill_agent_session(sid: i32) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn kill_agent_session(_sid: i32) {}
-
 // ─── stale daemon cleanup ────────────────────────────────────────
 
 /// Kill any daemon process whose PID was recorded in the lock file.
