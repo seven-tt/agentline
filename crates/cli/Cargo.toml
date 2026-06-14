@@ -18,6 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 agentline-bridge = { workspace = true }
+agentline-im-core = { workspace = true }
 agentline-im-wechat = { workspace = true }
 agentline-im-dingtalk = { workspace = true }
 agentline-im-feishu = { workspace = true }
@@ -32,6 +33,7 @@ agentline-agent-gemini = { workspace = true }
 agentline-agent-hermes = { workspace = true }
 agentline-agent-codex = { workspace = true }
 
+async-trait = { workspace = true }
 rust-i18n = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }

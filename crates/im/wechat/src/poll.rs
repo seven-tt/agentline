@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::http::HttpClient;
 use crate::types::{BaseInfo, GetUpdatesReq, GetUpdatesResp, WeixinMessage};
-use agentline_bridge::types::{InboundMessage, MessageKind, PeerRef};
+use agentline_im_core::types::{InboundMessage, MessageKind, PeerRef};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};

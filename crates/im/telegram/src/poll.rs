@@ -1,6 +1,6 @@
 use crate::error::Error;
 use crate::types::{ApiResponse, Update};
-use agentline_bridge::types::{InboundMessage, MessageKind, PeerRef};
+use agentline_im_core::types::{InboundMessage, MessageKind, PeerRef};
 use std::time::Duration;
 use tokio::sync::mpsc;
 

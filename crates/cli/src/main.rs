@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+mod agents;
 mod config;
 mod login;
 mod run;
@@ -62,8 +63,9 @@ async fn main() -> Result<()> {
         return run_service(action, cli.config.as_deref()).await;
     }
 
-    let (cfg, created) = config::AppConfig::load_or_init(&config_path)
+    let (mut cfg, created) = config::AppConfig::load_or_init(&config_path)
         .with_context(|| format!("could not load config from {}", config_path.display()))?;
+    cfg.config_path = Some(config_path.clone());
     init_tracing(&cfg.log.level);
     if created {
         eprintln!(

@@ -13,9 +13,10 @@ categories.workspace = true
 readme.workspace = true
 
 [dependencies]
-agentline-bridge = { workspace = true }
+agentline-im-core = { workspace = true }
 
 async-trait = { workspace = true }
+rust-i18n = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-tungstenite = { workspace = true }

@@ -1,6 +1,6 @@
 //! Feishu (Lark) IM adapter for agentline.
 //!
-//! Uses HTTP event subscription to receive messages and REST API to send.
+//! Uses WebSocket long-connection to receive messages and REST API to send.
 //! Authentication: app_id + app_secret → tenant_access_token (2h TTL, auto-refresh).
 //!
 //! Outbound strategy:
@@ -8,43 +8,51 @@
 //! - Summary / plan / error → post (rich text)
 //! - Tool status / permission → plain text
 
+rust_i18n::i18n!("../core/locales", fallback = "zh-CN");
+
 pub mod auth;
 pub mod error;
 pub mod send;
 pub mod types;
-pub mod webhook;
+pub mod ws;
 
 pub use error::{Error, Result};
-pub use webhook::WebhookConfig;
 
-use agentline_bridge::ImChannel;
-use agentline_bridge::PermissionDanger;
-use agentline_bridge::types::{ElicitFieldType, Media, MessageEvent, PeerRef};
+use agentline_im_core::PermissionDanger;
+use agentline_im_core::event::OutboundEvent;
+use agentline_im_core::source::{ImAdapter, ImCapabilities, InputSource, InputSourceKind};
+use agentline_im_core::types::{ElicitFieldType, PeerRef};
 use async_trait::async_trait;
 use auth::TokenManager;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct FeishuConfig {
     pub app_id: String,
     pub app_secret: String,
-    pub verification_token: String,
-    pub encrypt_key: String,
-    pub webhook_bind: String,
     pub allowed_users: Vec<String>,
 }
+
+/// Minimum interval between card PATCH updates. Feishu rate-limits PATCH
+/// requests; sending one per chunk causes visible stuttering.
+const CARD_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(300);
 
 struct ActiveCard {
     message_id: String,
     accumulated_text: String,
+    thinking_chars: usize,
+    last_update: std::time::Instant,
+    dirty: bool,
 }
 
 pub struct FeishuChannel {
     http: reqwest::Client,
     token_mgr: TokenManager,
     active_cards: Arc<Mutex<HashMap<String, ActiveCard>>>,
+    cfg: Mutex<Option<FeishuConfig>>,
 }
 
 impl FeishuChannel {
@@ -52,33 +60,50 @@ impl FeishuChannel {
         cfg: FeishuConfig,
     ) -> Result<(
         Self,
-        tokio::sync::mpsc::Receiver<agentline_bridge::types::InboundMessage>,
+        tokio::sync::mpsc::Receiver<agentline_im_core::types::InboundMessage>,
         tokio::task::JoinHandle<()>,
     )> {
-        let token_mgr = TokenManager::new(cfg.app_id, cfg.app_secret).await?;
+        let token_mgr = TokenManager::new(cfg.app_id.clone(), cfg.app_secret.clone()).await?;
         let _refresh_handle = token_mgr.clone().spawn_refresh();
 
         let http = reqwest::Client::builder()
             .build()
             .map_err(|e| Error::http(format!("build http: {e}")))?;
 
-        let webhook_cfg = WebhookConfig {
-            verification_token: cfg.verification_token,
-            encrypt_key: cfg.encrypt_key,
+        let ws_cfg = ws::WsConfig {
+            app_id: cfg.app_id,
+            app_secret: cfg.app_secret,
             allowed_users: cfg.allowed_users,
+            buffer: 32,
         };
 
-        let (rx, webhook_handle) = webhook::spawn_webhook(cfg.webhook_bind, webhook_cfg, 32);
+        let (rx, ws_handle) = ws::spawn_ws_stream(ws_cfg);
 
         Ok((
             Self {
                 http,
                 token_mgr,
                 active_cards: Arc::new(Mutex::new(HashMap::new())),
+                cfg: Mutex::new(None),
             },
             rx,
-            webhook_handle,
+            ws_handle,
         ))
+    }
+
+    /// Create a FeishuChannel that can be started later via `InputSource::start()`.
+    pub async fn new(cfg: FeishuConfig) -> Result<Self> {
+        let token_mgr = TokenManager::new(cfg.app_id.clone(), cfg.app_secret.clone()).await?;
+        let _refresh_handle = token_mgr.clone().spawn_refresh();
+        let http = reqwest::Client::builder()
+            .build()
+            .map_err(|e| Error::http(format!("build http: {e}")))?;
+        Ok(Self {
+            http,
+            token_mgr,
+            active_cards: Arc::new(Mutex::new(HashMap::new())),
+            cfg: Mutex::new(Some(cfg)),
+        })
     }
 
     async fn finalize_card(&self, peer_id: &str) {
@@ -93,7 +118,7 @@ impl FeishuChannel {
         }
     }
 
-    async fn send_plain(&self, to: &PeerRef, text: &str) -> agentline_bridge::Result<()> {
+    async fn send_plain(&self, to: &PeerRef, text: &str) -> agentline_im_core::Result<()> {
         if text.is_empty() {
             return Ok(());
         }
@@ -108,11 +133,13 @@ impl FeishuChannel {
         to: &PeerRef,
         title: &str,
         text: &str,
-    ) -> agentline_bridge::Result<()> {
+        template: &str,
+    ) -> agentline_im_core::Result<()> {
         if text.is_empty() {
             return Ok(());
         }
-        send::send_post(&self.http, &self.token_mgr, &to.user_id, title, text)
+        let card_json = types::build_card(title, text, template);
+        send::send_card(&self.http, &self.token_mgr, &to.user_id, &card_json)
             .await
             .map(|_| ())
             .map_err(Into::into)
@@ -120,35 +147,212 @@ impl FeishuChannel {
 }
 
 #[async_trait]
-impl ImChannel for FeishuChannel {
-    async fn send_text(&self, to: &PeerRef, text: &str) -> agentline_bridge::Result<()> {
-        self.send_plain(to, text).await
+impl InputSource for FeishuChannel {
+    fn id(&self) -> &str {
+        "feishu"
     }
 
-    async fn send_media(&self, _to: &PeerRef, _media: Media) -> agentline_bridge::Result<()> {
-        Err(agentline_bridge::Error::NotSupported)
+    fn kind(&self) -> InputSourceKind {
+        InputSourceKind::Im
     }
 
-    async fn send_event(&self, to: &PeerRef, event: &MessageEvent) -> agentline_bridge::Result<()> {
+    fn parse_message(
+        &self,
+        msg: &agentline_im_core::types::InboundMessage,
+    ) -> agentline_im_core::types::InboundPayload {
+        agentline_im_core::default_parse_message(msg)
+    }
+
+    async fn start(
+        &self,
+    ) -> agentline_im_core::Result<
+        tokio::sync::mpsc::Receiver<agentline_im_core::types::InboundMessage>,
+    > {
+        let cfg = self
+            .cfg
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| agentline_im_core::Error::other("feishu already started"))?;
+        let ws_cfg = ws::WsConfig {
+            app_id: cfg.app_id,
+            app_secret: cfg.app_secret,
+            allowed_users: cfg.allowed_users,
+            buffer: 32,
+        };
+        let (rx, _handle) = ws::spawn_ws_stream(ws_cfg);
+        Ok(rx)
+    }
+
+    async fn send_event(
+        &self,
+        to: &PeerRef,
+        event: &OutboundEvent,
+    ) -> agentline_im_core::Result<()> {
+        use agentline_im_core::event::ToolEvent;
+        use rust_i18n::t;
+
         let peer_id = &to.user_id;
 
         match event {
-            MessageEvent::StreamChunk { text } => {
+            OutboundEvent::Thinking { tag, text } => {
+                let mut cards = self.active_cards.lock().await;
+                match cards.get_mut(peer_id) {
+                    Some(active) => {
+                        active.thinking_chars += text.chars().count();
+                        active.accumulated_text.push_str(text);
+                        if active.last_update.elapsed() >= CARD_UPDATE_INTERVAL {
+                            let card_json =
+                                types::build_streaming_card(&active.accumulated_text, "thinking");
+                            if let Err(e) = send::update_card(
+                                &self.http,
+                                &self.token_mgr,
+                                &active.message_id,
+                                &card_json,
+                            )
+                            .await
+                            {
+                                tracing::warn!(error=%e, "feishu thinking card update failed");
+                            }
+                            active.last_update = std::time::Instant::now();
+                            active.dirty = false;
+                        } else {
+                            active.dirty = true;
+                        }
+                    }
+                    None => {
+                        let header = format!("💭 *{tag}*\n");
+                        let display = format!("{header}{text}");
+                        let card_json = types::build_streaming_card(&display, "thinking");
+                        match send::send_card(&self.http, &self.token_mgr, peer_id, &card_json)
+                            .await
+                        {
+                            Ok(message_id) => {
+                                cards.insert(
+                                    peer_id.clone(),
+                                    ActiveCard {
+                                        message_id,
+                                        accumulated_text: display,
+                                        thinking_chars: text.chars().count(),
+                                        last_update: std::time::Instant::now(),
+                                        dirty: false,
+                                    },
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(error=%e, "failed to create feishu thinking card");
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
+
+            OutboundEvent::ThinkingEnd {
+                tag, elapsed_secs, ..
+            } => {
+                let mut cards = self.active_cards.lock().await;
+                if let Some(active) = cards.get_mut(peer_id) {
+                    let chars = active.thinking_chars;
+                    let summary = if chars > 0 {
+                        t!(
+                            "bridge.thinking_summary",
+                            tag = tag,
+                            secs = format!("{:.1}", elapsed_secs),
+                            chars = chars
+                        )
+                        .to_string()
+                    } else {
+                        format!(
+                            "💭 {tag} {}",
+                            t!("im.thinking_short", secs = format!("{:.1}", elapsed_secs),)
+                        )
+                    };
+                    active.accumulated_text = format!("{summary}\n---\n");
+                    active.thinking_chars = 0;
+                    let card_json =
+                        types::build_streaming_card(&active.accumulated_text, "processing");
+                    if let Err(e) = send::update_card(
+                        &self.http,
+                        &self.token_mgr,
+                        &active.message_id,
+                        &card_json,
+                    )
+                    .await
+                    {
+                        tracing::warn!(error=%e, "feishu thinking-end card update failed");
+                    }
+                    Ok(())
+                } else {
+                    drop(cards);
+                    let summary =
+                        t!("im.thinking_short", secs = format!("{:.1}", elapsed_secs),).to_string();
+                    self.send_plain(to, &format!("💭 {tag} {summary}")).await
+                }
+            }
+
+            OutboundEvent::StreamStart { tag } => {
+                let header = format!("🤖 {tag} ");
+                let mut cards = self.active_cards.lock().await;
+                if let Some(active) = cards.get_mut(peer_id) {
+                    active.accumulated_text.push_str(&header);
+                    let card_json =
+                        types::build_streaming_card(&active.accumulated_text, "processing");
+                    if let Err(e) = send::update_card(
+                        &self.http,
+                        &self.token_mgr,
+                        &active.message_id,
+                        &card_json,
+                    )
+                    .await
+                    {
+                        tracing::warn!(error=%e, "feishu stream-start card update failed");
+                    }
+                } else {
+                    let card_json = types::build_streaming_card(&header, "processing");
+                    match send::send_card(&self.http, &self.token_mgr, peer_id, &card_json).await {
+                        Ok(message_id) => {
+                            cards.insert(
+                                peer_id.clone(),
+                                ActiveCard {
+                                    message_id,
+                                    accumulated_text: header,
+                                    thinking_chars: 0,
+                                    last_update: std::time::Instant::now(),
+                                    dirty: false,
+                                },
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(error=%e, "failed to create feishu card for header");
+                        }
+                    }
+                }
+                Ok(())
+            }
+
+            OutboundEvent::StreamChunk { text } => {
                 let mut cards = self.active_cards.lock().await;
                 match cards.get_mut(peer_id) {
                     Some(active) => {
                         active.accumulated_text.push_str(text);
-                        let card_json =
-                            types::build_streaming_card(&active.accumulated_text, "processing");
-                        if let Err(e) = send::update_card(
-                            &self.http,
-                            &self.token_mgr,
-                            &active.message_id,
-                            &card_json,
-                        )
-                        .await
-                        {
-                            tracing::warn!(error=%e, "feishu card update failed");
+                        if active.last_update.elapsed() >= CARD_UPDATE_INTERVAL {
+                            let card_json =
+                                types::build_streaming_card(&active.accumulated_text, "processing");
+                            if let Err(e) = send::update_card(
+                                &self.http,
+                                &self.token_mgr,
+                                &active.message_id,
+                                &card_json,
+                            )
+                            .await
+                            {
+                                tracing::warn!(error=%e, "feishu card update failed");
+                            }
+                            active.last_update = std::time::Instant::now();
+                            active.dirty = false;
+                        } else {
+                            active.dirty = true;
                         }
                     }
                     None => {
@@ -162,6 +366,9 @@ impl ImChannel for FeishuChannel {
                                     ActiveCard {
                                         message_id,
                                         accumulated_text: text.clone(),
+                                        thinking_chars: 0,
+                                        last_update: std::time::Instant::now(),
+                                        dirty: false,
                                     },
                                 );
                             }
@@ -176,43 +383,74 @@ impl ImChannel for FeishuChannel {
                 Ok(())
             }
 
-            MessageEvent::StreamEnd => {
+            OutboundEvent::StreamEnd => {
                 self.finalize_card(peer_id).await;
                 Ok(())
             }
 
-            MessageEvent::PlainText(text) => {
+            OutboundEvent::Text { content, format } => {
                 self.finalize_card(peer_id).await;
-                self.send_rich(to, "回复", text).await
-            }
-
-            MessageEvent::ToolStart { kind, label, .. } => {
-                self.send_plain(to, &agentline_bridge::format::tool_label(*kind, label))
-                    .await
-            }
-
-            MessageEvent::ToolEnd { ok, summary, .. } => {
-                let icon = if *ok { "✅" } else { "❌" };
-                let text = match summary {
-                    Some(s) if !s.is_empty() => format!("{icon} {s}"),
-                    _ => format!("{icon} 工具执行{}", if *ok { "完成" } else { "失败" }),
-                };
-                self.send_plain(to, &text).await
-            }
-
-            MessageEvent::ToolProgress { .. } => Ok(()),
-
-            MessageEvent::Plan { steps } => {
-                self.finalize_card(peer_id).await;
-                let mut text = String::new();
-                for (i, step) in steps.iter().enumerate() {
-                    text.push_str(&format!("{}. {}\n", i + 1, step));
+                match format {
+                    agentline_im_core::event::TextFormat::Markdown => {
+                        self.send_rich(to, "🤖 Agent", content, "blue").await
+                    }
+                    agentline_im_core::event::TextFormat::Plain => {
+                        self.send_plain(to, content).await
+                    }
                 }
-                self.send_rich(to, "📋 执行计划", text.trim_end()).await
             }
 
-            MessageEvent::PermissionRequest {
-                what, danger, tag, ..
+            OutboundEvent::Media(_) => Err(agentline_im_core::Error::NotSupported),
+
+            OutboundEvent::Tool(ToolEvent::Start { .. }) => Ok(()),
+
+            OutboundEvent::Tool(ToolEvent::Progress { .. }) => Ok(()),
+
+            OutboundEvent::Tool(ToolEvent::End {
+                ok,
+                summary,
+                label,
+                kind,
+                ..
+            }) => {
+                self.finalize_card(peer_id).await;
+                let icon = if *ok { "✅" } else { "❌" };
+                let kind_label = if !label.is_empty() {
+                    label.clone()
+                } else {
+                    kind.name().to_string()
+                };
+                let body = match summary {
+                    Some(s) if !s.is_empty() => {
+                        let cleaned = s
+                            .strip_prefix("```\n")
+                            .or_else(|| s.strip_prefix("```"))
+                            .and_then(|rest| {
+                                rest.strip_suffix("\n```")
+                                    .or_else(|| rest.strip_suffix("```"))
+                            })
+                            .unwrap_or(s);
+                        cleaned.to_string()
+                    }
+                    _ => {
+                        let status = if *ok {
+                            t!("im.tool_done")
+                        } else {
+                            t!("im.tool_failed")
+                        };
+                        status.to_string()
+                    }
+                };
+                let title = format!("{icon} {kind_label}");
+                let template = if *ok { "green" } else { "red" };
+                self.send_rich(to, &title, &body, template).await
+            }
+
+            OutboundEvent::PermissionRequest {
+                what,
+                danger,
+                tool_kind,
+                ..
             } => {
                 self.finalize_card(peer_id).await;
                 let icon = match danger {
@@ -221,17 +459,19 @@ impl ImChannel for FeishuChannel {
                     PermissionDanger::High => "🔴",
                 };
                 let risk = match danger {
-                    PermissionDanger::Low => "低风险",
-                    PermissionDanger::Medium => "中等风险",
-                    PermissionDanger::High => "高风险",
+                    PermissionDanger::Low => t!("im.risk_low"),
+                    PermissionDanger::Medium => t!("im.risk_medium"),
+                    PermissionDanger::High => t!("im.risk_high"),
                 };
-                let text = format!(
-                    "⚠️ {tag} 需授权: {what}\n{icon} {risk} · y 单次 / s session级 / n 拒绝"
-                );
-                self.send_plain(to, &text).await
+                let kind_name = tool_kind.name();
+                let card_json = types::build_permission_card(kind_name, what, icon, &risk);
+                send::send_card(&self.http, &self.token_mgr, peer_id, &card_json)
+                    .await
+                    .map(|_| ())
+                    .map_err(Into::into)
             }
 
-            MessageEvent::ElicitInput { prompt, schema, .. } => {
+            OutboundEvent::ElicitInput { prompt, schema, .. } => {
                 self.finalize_card(peer_id).await;
                 let mut text = format!("💬 {prompt}");
                 if let Some(fields) = schema {
@@ -248,27 +488,84 @@ impl ImChannel for FeishuChannel {
                                 }
                                 let hint = match &field.field_type {
                                     ElicitFieldType::MultiSelect { .. } => {
-                                        "\n\n（回复编号选择，多选用逗号分隔，如 1,3）"
+                                        t!("im.elicit_multi_hint")
                                     }
-                                    _ => "\n\n（回复编号选择，或直接输入答案）",
+                                    _ => t!("im.elicit_select_hint"),
                                 };
-                                text.push_str(hint);
+                                text.push_str(&hint);
                             }
                             ElicitFieldType::Boolean => {
-                                text.push_str("\n\n（回复 y/n）");
+                                text.push_str(&t!("im.elicit_bool_hint"));
                             }
                             _ => {
-                                text.push_str("\n\n（请直接回复你的答案）");
+                                text.push_str(&t!("im.elicit_free_hint"));
                             }
                         }
                     }
                 } else {
-                    text.push_str("\n\n（请直接回复你的答案）");
+                    text.push_str(&t!("im.elicit_free_hint"));
                 }
                 self.send_plain(to, &text).await
             }
 
-            MessageEvent::Error(msg) => {
+            OutboundEvent::Plan { steps } => {
+                self.finalize_card(peer_id).await;
+                let mut text = String::new();
+                for (i, step) in steps.iter().enumerate() {
+                    text.push_str(&format!("{}. {}\n", i + 1, step));
+                }
+                let title = t!("im.plan_title").to_string();
+                self.send_rich(to, &title, text.trim_end(), "purple").await
+            }
+
+            OutboundEvent::SessionList { info } => {
+                self.finalize_card(peer_id).await;
+                match info {
+                    None => self.send_plain(to, &t!("bridge.session_list_empty")).await,
+                    Some(s) => {
+                        let perm = if s.is_yolo {
+                            t!("bridge.yolo_label")
+                        } else {
+                            t!("bridge.safe_label")
+                        };
+                        let content = format!(
+                            "**🆔 Session ID**  `{sid}`\n\
+                             **🤖 {type_l}**  {agent}\n\
+                             **📁 {cwd_l}**  `{cwd}`\n\
+                             **🕐 {start_l}**  {started}\n\
+                             **⏱️ {idle_l}**  {idle}\n\
+                             **🔐 {perm_l}**  {perm}\n\
+                             **✅ {grant_l}**  {grants}",
+                            sid = s.session_id,
+                            type_l = t!("bridge.session_type_label"),
+                            agent = s.agent_name,
+                            cwd_l = t!("bridge.session_cwd_label"),
+                            cwd = s.cwd.display(),
+                            start_l = t!("bridge.session_started_label"),
+                            started = agentline_im_core::format::fmt_local(s.created_at),
+                            idle_l = t!("bridge.session_idle_label"),
+                            idle = agentline_im_core::format::fmt_ago(s.idle_duration),
+                            perm_l = t!("bridge.session_perm_label"),
+                            perm = perm,
+                            grant_l = t!("bridge.session_grants_label"),
+                            grants = s.grant_summary,
+                        );
+                        let title = format!("📋 #{} · {}", s.short_id, s.agent_name);
+                        self.send_rich(to, &title, &content, "indigo").await
+                    }
+                }
+            }
+
+            OutboundEvent::ModeChanged { .. } | OutboundEvent::SessionTitle { .. } => {
+                agentline_im_core::render_outbound_event(self, to, event).await
+            }
+
+            OutboundEvent::Done { .. } => {
+                self.finalize_card(peer_id).await;
+                Ok(())
+            }
+
+            OutboundEvent::Error(msg) => {
                 let mut cards = self.active_cards.lock().await;
                 if let Some(active) = cards.remove(peer_id) {
                     let card_json = types::build_streaming_card(msg, "failed");
@@ -282,13 +579,35 @@ impl ImChannel for FeishuChannel {
                     return Ok(());
                 }
                 drop(cards);
-                self.send_rich(to, "❌ 错误", msg).await
+                let title = t!("im.stream_failed").to_string();
+                self.send_rich(to, &title, msg, "red").await
             }
+        }
+    }
 
-            MessageEvent::Done => {
-                self.finalize_card(peer_id).await;
-                Ok(())
-            }
+    async fn shutdown(&self) -> agentline_im_core::Result<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ImAdapter for FeishuChannel {
+    async fn send_text(&self, to: &PeerRef, text: &str) -> agentline_im_core::Result<()> {
+        self.send_plain(to, text).await
+    }
+
+    async fn send_markdown(&self, to: &PeerRef, text: &str) -> agentline_im_core::Result<()> {
+        self.send_rich(to, "🤖 Agentline", text, "indigo").await
+    }
+
+    fn typing_interval(&self) -> Duration {
+        Duration::from_secs(60)
+    }
+
+    fn capabilities(&self) -> ImCapabilities {
+        ImCapabilities {
+            markdown: true,
+            ..Default::default()
         }
     }
 }

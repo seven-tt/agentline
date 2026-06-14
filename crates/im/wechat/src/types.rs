@@ -236,15 +236,17 @@ pub struct SendMessageResp {
 
 #[derive(Debug, Serialize)]
 pub struct SendTypingReq {
-    pub to_user_id: String,
+    pub ilink_user_id: String,
     pub typing_ticket: String,
-    pub context_token: String,
+    pub status: i32,
+    pub base_info: BaseInfo,
 }
 
 #[derive(Debug, Serialize)]
 pub struct GetConfigReq {
-    pub to_user_id: String,
+    pub ilink_user_id: String,
     pub context_token: String,
+    pub base_info: BaseInfo,
 }
 
 #[derive(Debug, Deserialize)]

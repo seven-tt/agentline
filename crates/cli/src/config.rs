@@ -22,6 +22,9 @@ pub struct AppConfig {
     pub log: LogSection,
     #[serde(default)]
     pub projects: Vec<ProjectConfig>,
+    /// Path to the TOML config file (set after deserialization).
+    #[serde(skip)]
+    pub config_path: Option<PathBuf>,
 }
 
 /// Logging configuration.
@@ -166,17 +169,7 @@ pub struct FeishuBackendCfg {
     #[serde(default)]
     pub app_secret: String,
     #[serde(default)]
-    pub verification_token: String,
-    #[serde(default)]
-    pub encrypt_key: String,
-    #[serde(default = "default_feishu_bind")]
-    pub webhook_bind: String,
-    #[serde(default)]
     pub allowed_users: Vec<String>,
-}
-
-fn default_feishu_bind() -> String {
-    "0.0.0.0:9000".into()
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -254,6 +247,8 @@ pub struct GeminiBackendCfg {
     pub extra_env: Vec<(String, String)>,
     #[serde(default)]
     pub remove_env: Vec<String>,
+    #[serde(default)]
+    pub api_key: String,
 }
 
 /// Maps to `agentline_agent_kiro::KiroConfig`.
@@ -354,6 +349,8 @@ pub struct CodexBackendCfg {
     /// Override codex's default model (e.g. `"gpt-5-codex"`). Empty = use codex default.
     #[serde(default)]
     pub model: String,
+    #[serde(default)]
+    pub api_key: String,
 }
 
 fn default_true() -> bool {
