@@ -113,9 +113,6 @@ impl Tr {
 // ─── tray app ───────────────────────────────────────────────────
 
 fn run_tray() -> Result<()> {
-    #[cfg(target_os = "macos")]
-    hide_from_dock();
-
     let locale = Locale::from_config();
     let tr = Tr::new(locale);
 
@@ -133,6 +130,9 @@ fn run_tray() -> Result<()> {
     }
 
     let event_loop = EventLoopBuilder::new().build();
+
+    #[cfg(target_os = "macos")]
+    hide_from_dock();
 
     let menu = Menu::new();
     let status_item = MenuItem::new(tr.status_checking(), false, None);
