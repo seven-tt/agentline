@@ -7,40 +7,25 @@ $Repo = "seven-tt/agentline"
 $RepoUrl = "https://github.com/$Repo"
 $Label = "win-x64"
 
-# ── install dir ──────────────────────────────────────────────────
-$installDir = Join-Path $env:LOCALAPPDATA "agentline\bin"
-if (-not (Test-Path $installDir)) { New-Item -ItemType Directory -Path $installDir -Force | Out-Null }
-
-# ── try downloading prebuilt binary from GitHub Releases ─────────
-function Download-Binary {
-    param([string]$BinName)
-
-    try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -ErrorAction Stop
-        $tag = $release.tag_name
-        $version = $tag.TrimStart("v")
-        $assetName = "$BinName-$version-$Label.exe"
-        $url = "$RepoUrl/releases/download/$tag/$assetName"
-        $dest = Join-Path $installDir "$BinName.exe"
-
-        Write-Host "Downloading $assetName ..." -ForegroundColor Cyan
-        Invoke-WebRequest -Uri $url -OutFile $dest -ErrorAction Stop
-        Write-Host "Installed $BinName $version -> $dest" -ForegroundColor Green
-        return $true
-    } catch {
-        Write-Host "Download failed, will try building from source." -ForegroundColor Yellow
-        return $false
-    }
-}
-
-# ── try prebuilt first ───────────────────────────────────────────
+# ── try downloading prebuilt installer from GitHub Releases ──────
 $needBuild = $false
 
-if (-not (Download-Binary "agentline")) {
-    $needBuild = $true
-}
+try {
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -ErrorAction Stop
+    $tag = $release.tag_name
+    $version = $tag.TrimStart("v")
+    $setupName = "agentline-tray-$version-$Label-setup.exe"
+    $url = "$RepoUrl/releases/download/$tag/$setupName"
+    $tmpSetup = Join-Path ([System.IO.Path]::GetTempPath()) $setupName
 
-if (-not (Download-Binary "agentline-tray")) {
+    Write-Host "Downloading $setupName ..." -ForegroundColor Cyan
+    Invoke-WebRequest -Uri $url -OutFile $tmpSetup -ErrorAction Stop
+    Write-Host "Download complete. Launching installer ..." -ForegroundColor Green
+    Start-Process -FilePath $tmpSetup -Wait
+    Remove-Item -Path $tmpSetup -ErrorAction SilentlyContinue
+    Write-Host "Installer finished." -ForegroundColor Green
+} catch {
+    Write-Host "Download failed, will try building from source." -ForegroundColor Yellow
     $needBuild = $true
 }
 
@@ -48,6 +33,9 @@ if (-not (Download-Binary "agentline-tray")) {
 if ($needBuild) {
     Write-Host ""
     Write-Host "Falling back to building from source ..." -ForegroundColor Yellow
+
+    $installDir = Join-Path $env:LOCALAPPDATA "agentline\bin"
+    if (-not (Test-Path $installDir)) { New-Item -ItemType Directory -Path $installDir -Force | Out-Null }
 
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
         Write-Host "Rust toolchain not found." -ForegroundColor Red
@@ -84,14 +72,13 @@ if ($needBuild) {
         Copy-Item "target\release\agentline-tray.exe" $trayBin -Force
         Write-Host "Installed agentline-tray -> $trayBin" -ForegroundColor Green
     }
-}
 
-# ── add to user PATH if needed ───────────────────────────────────
-$userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-if ($userPath -notlike "*$installDir*") {
-    [Environment]::SetEnvironmentVariable("PATH", "$userPath;$installDir", "User")
-    Write-Host "Added $installDir to user PATH" -ForegroundColor Yellow
-    Write-Host "  Restart your terminal for PATH changes to take effect."
+    $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+    if ($userPath -notlike "*$installDir*") {
+        [Environment]::SetEnvironmentVariable("PATH", "$userPath;$installDir", "User")
+        Write-Host "Added $installDir to user PATH" -ForegroundColor Yellow
+        Write-Host "  Restart your terminal for PATH changes to take effect."
+    }
 }
 
 # ── init config ──────────────────────────────────────────────────
@@ -117,6 +104,5 @@ if (-not (Test-Path $configFile)) {
 
 Write-Host ""
 Write-Host "Installation complete!" -ForegroundColor Green
-Write-Host "  Binary: $installDir\agentline.exe"
-Write-Host "  Tray:   $installDir\agentline-tray.exe"
 Write-Host "  Config: $configFile"
+Write-Host "  Edit config, then run 'agentline' to start."
