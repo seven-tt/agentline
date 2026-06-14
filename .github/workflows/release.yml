@@ -157,7 +157,7 @@ jobs:
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          BIN_DIR="$(cygpath -w "target/${{ matrix.target }}/release")"
+          BIN_DIR="$(cygpath -w "$(pwd)/target/${{ matrix.target }}/release")"
           iscc //DVersion="${VERSION}" //DBinDir="${BIN_DIR}" scripts/installer.iss
           mv "scripts/agentline-tray-${VERSION}-win-x64-setup.exe" dist/
 

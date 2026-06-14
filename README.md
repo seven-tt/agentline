@@ -64,31 +64,32 @@ Agentline is a high-performance Rust bridge that turns any instant messaging pla
 
 ## Quick Start
 
-Requires **Rust 1.89+**. Runs on **macOS**, **Linux**, and **Windows**.
+Runs on **macOS**, **Linux**, and **Windows**.
+
+### One-line Install (recommended)
 
 ```bash
-# Install
+# macOS / Linux — installs tray app + CLI
 curl -fsSL https://raw.githubusercontent.com/seven-tt/agentline/main/scripts/install.sh | bash
 
-# Configure
+# Windows (PowerShell) — downloads and runs the installer
+irm https://raw.githubusercontent.com/seven-tt/agentline/main/scripts/install.ps1 | iex
+
+# Headless only (servers without GUI)
+curl -fsSL https://raw.githubusercontent.com/seven-tt/agentline/main/scripts/install.sh | bash -s -- --headless
+```
+
+On macOS, the installer mounts a `.dmg` and copies `AgentlineTray.app` to `/Applications/`. On Linux, it downloads a `.deb` package and installs via `dpkg`. On Windows, it downloads and runs an Inno Setup installer. Linux auto-detects headless environments and falls back to CLI-only.
+
+### Configure and Run
+
+```bash
 agentline                            # auto-creates ~/.agentline/config.toml
 $EDITOR ~/.agentline/config.toml     # set IM credentials + choose agent
-
-# Run
 agentline                            # start bridging
 ```
 
 For WeChat, run `agentline login` first to scan the QR code.
-
-### System Tray (macOS / Windows / Linux)
-
-```bash
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/seven-tt/agentline/main/scripts/install.sh | bash -s -- --tray
-
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/seven-tt/agentline/main/scripts/install.ps1 | iex
-```
 
 ## Architecture
 

@@ -84,25 +84,54 @@ download_binary() {
     fi
 }
 
-# ── helper: download macOS .app bundle ───────────────────────────
-download_macos_app() {
+# ── helper: download and install macOS .dmg ──────────────────────
+download_macos_dmg() {
     local tag="$1"
     local version="${tag#v}"
-    local zip_name="AgentlineTray-v${version}-${LABEL}.zip"
-    local url="$REPO_URL/releases/download/${tag}/${zip_name}"
+    local dmg_name="agentline-tray-${version}-${LABEL}.dmg"
+    local url="$REPO_URL/releases/download/${tag}/${dmg_name}"
     local app_dest="/Applications/AgentlineTray.app"
 
-    echo "Downloading $zip_name ..."
-    local tmpzip
-    tmpzip="$(mktemp).zip"
-    if curl -fsSL -o "$tmpzip" "$url"; then
+    echo "Downloading $dmg_name ..."
+    local tmpdmg
+    tmpdmg="$(mktemp).dmg"
+    if curl -fsSL -o "$tmpdmg" "$url"; then
+        local mount_dir
+        mount_dir="$(mktemp -d)"
+        hdiutil attach "$tmpdmg" -mountpoint "$mount_dir" -nobrowse -quiet
         rm -rf "$app_dest"
-        unzip -qo "$tmpzip" -d /Applications/
-        rm -f "$tmpzip"
+        cp -R "$mount_dir/AgentlineTray.app" /Applications/
+        hdiutil detach "$mount_dir" -quiet
+        rm -f "$tmpdmg"
         echo "Installed AgentlineTray.app -> $app_dest"
         return 0
     else
-        rm -f "$tmpzip"
+        rm -f "$tmpdmg"
+        return 1
+    fi
+}
+
+# ── helper: download and install Linux .deb ──────────────────────
+download_linux_deb() {
+    local tag="$1"
+    local version="${tag#v}"
+    local deb_name="agentline-tray-${version}-${LABEL}.deb"
+    local url="$REPO_URL/releases/download/${tag}/${deb_name}"
+
+    echo "Downloading $deb_name ..."
+    local tmpdeb
+    tmpdeb="$(mktemp).deb"
+    if curl -fsSL -o "$tmpdeb" "$url"; then
+        if command -v sudo &>/dev/null; then
+            sudo dpkg -i "$tmpdeb" || sudo apt-get install -f -y
+        else
+            dpkg -i "$tmpdeb" || apt-get install -f -y
+        fi
+        rm -f "$tmpdeb"
+        echo "Installed agentline + agentline-tray via .deb"
+        return 0
+    else
+        rm -f "$tmpdeb"
         return 1
     fi
 }
@@ -112,19 +141,19 @@ LATEST_TAG="$(get_latest_tag)"
 NEED_BUILD=false
 
 if [[ -n "$LATEST_TAG" ]]; then
-    if ! download_binary "agentline" "$LATEST_TAG"; then
-        NEED_BUILD=true
-    fi
-
     if [[ "$INSTALL_TRAY" == "true" ]]; then
         if [[ "$OS" == "darwin" ]]; then
-            if ! download_macos_app "$LATEST_TAG"; then
+            if ! download_macos_dmg "$LATEST_TAG"; then
                 NEED_BUILD=true
             fi
-        else
-            if ! download_binary "agentline-tray" "$LATEST_TAG"; then
+        elif [[ "$OS" == "linux" ]]; then
+            if ! download_linux_deb "$LATEST_TAG"; then
                 NEED_BUILD=true
             fi
+        fi
+    else
+        if ! download_binary "agentline" "$LATEST_TAG"; then
+            NEED_BUILD=true
         fi
     fi
 else
@@ -172,8 +201,8 @@ if [[ "$NEED_BUILD" == "true" ]]; then
     fi
 fi
 
-# ── add to PATH if needed ────────────────────────────────────────
-if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+# ── add to PATH if needed (only for headless install to ~/.local/bin) ─
+if [[ "$INSTALL_TRAY" != "true" ]] && [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     SHELL_RC=""
     case "$(basename "${SHELL:-bash}")" in
         bash) SHELL_RC="$HOME/.bashrc" ;;
@@ -209,12 +238,15 @@ fi
 # ── post-install hints ───────────────────────────────────────────
 echo ""
 echo "Installation complete!"
-echo "  Binary: $INSTALL_DIR/agentline"
 if [[ "$INSTALL_TRAY" == "true" ]]; then
     if [[ "$OS" == "darwin" ]]; then
-        echo "  Tray:   /Applications/AgentlineTray.app"
+        echo "  App:    /Applications/AgentlineTray.app"
+        echo "  CLI:    /Applications/AgentlineTray.app/Contents/MacOS/agentline"
     else
-        echo "  Tray:   $INSTALL_DIR/agentline-tray"
+        echo "  CLI:    /usr/bin/agentline"
+        echo "  Tray:   /usr/bin/agentline-tray"
     fi
+else
+    echo "  Binary: $INSTALL_DIR/agentline"
 fi
 echo "  Config: ${CONFIG_FILE:-$CONFIG_DIR/config.toml}"
