@@ -26,11 +26,15 @@ impl SessionRegistry {
         Self::default()
     }
 
-    pub fn update(&self, im_id: &str, snapshot: ImSnapshot) {
+    pub fn update(&self, source_id: &str, snapshot: ImSnapshot) {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(im_id.to_string(), snapshot);
+            .insert(source_id.to_string(), snapshot);
+    }
+
+    pub fn replace(&self, data: HashMap<String, ImSnapshot>) {
+        *self.inner.lock().unwrap_or_else(|e| e.into_inner()) = data;
     }
 
     pub fn snapshot(&self) -> HashMap<String, ImSnapshot> {

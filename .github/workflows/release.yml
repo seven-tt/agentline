@@ -201,10 +201,11 @@ jobs:
         env:
           SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          BINARY=$(ls dist/agentline-*-${{ matrix.label }})
-          chmod +x "$BINARY"
-          codesign --force --options runtime --sign "$SIGNING_IDENTITY" --timestamp "$BINARY"
-          codesign --verify --verbose "$BINARY"
+          for BINARY in dist/*-${{ matrix.label }}; do
+            chmod +x "$BINARY"
+            codesign --force --options runtime --sign "$SIGNING_IDENTITY" --timestamp "$BINARY"
+            codesign --verify --verbose "$BINARY"
+          done
 
       - name: sign and notarize .app
         env:

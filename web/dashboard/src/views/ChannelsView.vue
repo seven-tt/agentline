@@ -24,15 +24,13 @@ const channels = reactive<ChannelsConfig>({
     enable: false,
     app_id: '',
     app_secret: '',
-    verification_token: '',
-    encrypt_key: '',
-    webhook_bind: '0.0.0.0:9000',
     allowed_users: [],
   },
   telegram: { enable: false, bot_token: '', api_base: '', allowed_users: [] },
 })
 
 let savedSnapshot = ''
+let initialSnapshot = ''
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 
 function channelsSnapshot(): string {
@@ -51,6 +49,7 @@ async function fetchChannels() {
       loginState.value = { state: 'completed', message: '' }
     }
     savedSnapshot = channelsSnapshot()
+    initialSnapshot = savedSnapshot
   } catch { /* ignore */ }
 }
 
@@ -63,7 +62,9 @@ watch(channels, () => {
     try {
       await api.saveChannels(channels)
       savedSnapshot = channelsSnapshot()
-      markDirty()
+      if (savedSnapshot !== initialSnapshot) {
+        markDirty()
+      }
     } catch (e: any) {
       addToast('error', t('common.save_failed', { msg: e.message }))
     }
@@ -106,6 +107,131 @@ onMounted(fetchChannels)
 </script>
 
 <template>
+  <!-- Feishu -->
+  <div class="card">
+    <div class="card-head">
+      <h3><span class="im-dot" :style="{ background: imDotColor('feishu', channels.feishu.enable) }"></span> {{ $t('channels.feishu_title') }}</h3>
+      <div class="card-head-actions">
+        <span v-if="channels.feishu.enable" class="badge badge-green"><span class="badge-dot"></span>{{ $t('common.enabled') }}</span>
+        <button
+          :class="['toggle', { on: channels.feishu.enable }]"
+          @click="channels.feishu.enable = !channels.feishu.enable"
+        >
+          <span class="thumb"></span>
+        </button>
+      </div>
+    </div>
+    <div class="card-body" v-if="channels.feishu.enable">
+      <div class="grid grid-2">
+        <div class="field">
+          <label class="field-label">app_id</label>
+          <input type="text" v-model="channels.feishu.app_id" class="input-mono" :placeholder="$t('channels.feishu_app_id_placeholder')" />
+        </div>
+        <div class="field">
+          <label class="field-label">app_secret</label>
+          <input type="password" v-model="channels.feishu.app_secret" class="input-mono" :placeholder="$t('channels.feishu_app_secret_placeholder')" />
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label">allowed_users</label>
+        <input
+          type="text"
+          :value="channels.feishu.allowed_users.join(', ')"
+          @input="channels.feishu.allowed_users = ($event.target as HTMLInputElement).value.split(',').map(s => s.trim()).filter(Boolean)"
+          class="input-mono"
+          :placeholder="$t('channels.allowed_users_comma_placeholder')"
+        />
+        <span class="field-hint">{{ $t('channels.feishu_allowed_hint') }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- DingTalk -->
+  <div class="card">
+    <div class="card-head">
+      <h3><span class="im-dot" :style="{ background: imDotColor('dingtalk', channels.dingtalk.enable) }"></span> {{ $t('channels.dingtalk_title') }}</h3>
+      <div class="card-head-actions">
+        <span v-if="channels.dingtalk.enable" class="badge badge-green"><span class="badge-dot"></span>{{ $t('common.enabled') }}</span>
+        <button
+          :class="['toggle', { on: channels.dingtalk.enable }]"
+          @click="channels.dingtalk.enable = !channels.dingtalk.enable"
+        >
+          <span class="thumb"></span>
+        </button>
+      </div>
+    </div>
+    <div class="card-body" v-if="channels.dingtalk.enable">
+      <div class="grid grid-2">
+        <div class="field">
+          <label class="field-label">client_id</label>
+          <input type="text" v-model="channels.dingtalk.client_id" class="input-mono" placeholder="appKey" />
+          <span class="field-hint">{{ $t('channels.dingtalk_client_id_hint') }}</span>
+        </div>
+        <div class="field">
+          <label class="field-label">client_secret</label>
+          <input type="password" v-model="channels.dingtalk.client_secret" class="input-mono" placeholder="appSecret" />
+          <span class="field-hint">{{ $t('channels.dingtalk_client_secret_hint') }}</span>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label">allowed_users</label>
+        <input
+          type="text"
+          :value="channels.dingtalk.allowed_users.join(', ')"
+          @input="channels.dingtalk.allowed_users = ($event.target as HTMLInputElement).value.split(',').map(s => s.trim()).filter(Boolean)"
+          class="input-mono"
+          :placeholder="$t('channels.allowed_users_comma_placeholder')"
+        />
+        <span class="field-hint">{{ $t('channels.dingtalk_allowed_hint') }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Telegram -->
+  <div class="card">
+    <div class="card-head">
+      <h3><span class="im-dot" :style="{ background: imDotColor('telegram', channels.telegram.enable) }"></span> Telegram</h3>
+      <div class="card-head-actions">
+        <span v-if="channels.telegram.enable" class="badge badge-green"><span class="badge-dot"></span>{{ $t('common.enabled') }}</span>
+        <button
+          :class="['toggle', { on: channels.telegram.enable }]"
+          @click="channels.telegram.enable = !channels.telegram.enable"
+        >
+          <span class="thumb"></span>
+        </button>
+      </div>
+    </div>
+    <div class="card-body" v-if="channels.telegram.enable">
+      <div class="field">
+        <label class="field-label">Bot Token</label>
+        <input
+          type="password"
+          v-model="channels.telegram.bot_token"
+          class="input-mono"
+          :placeholder="$t('channels.telegram_token_placeholder')"
+        />
+      </div>
+      <div class="field">
+        <label class="field-label">API Base URL</label>
+        <input
+          type="text"
+          v-model="channels.telegram.api_base"
+          class="input-mono"
+          :placeholder="$t('channels.telegram_api_placeholder')"
+        />
+      </div>
+      <div class="field">
+        <label class="field-label">{{ $t('channels.allowed_users') }}</label>
+        <textarea
+          class="input-mono"
+          :value="channels.telegram.allowed_users.join('\n')"
+          @input="channels.telegram.allowed_users = ($event.target as HTMLTextAreaElement).value.split('\n').filter(Boolean)"
+          :placeholder="$t('channels.allowed_users_placeholder')"
+        ></textarea>
+      </div>
+    </div>
+  </div>
+
   <!-- WeChat -->
   <div class="card">
     <div class="card-head">
@@ -159,147 +285,6 @@ onMounted(fetchChannels)
             :placeholder="$t('channels.allowed_users_placeholder')"
           ></textarea>
         </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- DingTalk -->
-  <div class="card">
-    <div class="card-head">
-      <h3><span class="im-dot" :style="{ background: imDotColor('dingtalk', channels.dingtalk.enable) }"></span> {{ $t('channels.dingtalk_title') }}</h3>
-      <div class="card-head-actions">
-        <span v-if="channels.dingtalk.enable" class="badge badge-green"><span class="badge-dot"></span>{{ $t('common.enabled') }}</span>
-        <button
-          :class="['toggle', { on: channels.dingtalk.enable }]"
-          @click="channels.dingtalk.enable = !channels.dingtalk.enable"
-        >
-          <span class="thumb"></span>
-        </button>
-      </div>
-    </div>
-    <div class="card-body" v-if="channels.dingtalk.enable">
-      <div class="grid grid-2">
-        <div class="field">
-          <label class="field-label">client_id</label>
-          <input type="text" v-model="channels.dingtalk.client_id" class="input-mono" placeholder="appKey" />
-          <span class="field-hint">{{ $t('channels.dingtalk_client_id_hint') }}</span>
-        </div>
-        <div class="field">
-          <label class="field-label">client_secret</label>
-          <input type="password" v-model="channels.dingtalk.client_secret" class="input-mono" placeholder="appSecret" />
-          <span class="field-hint">{{ $t('channels.dingtalk_client_secret_hint') }}</span>
-        </div>
-      </div>
-      <div class="field">
-        <label class="field-label">allowed_users</label>
-        <input
-          type="text"
-          :value="channels.dingtalk.allowed_users.join(', ')"
-          @input="channels.dingtalk.allowed_users = ($event.target as HTMLInputElement).value.split(',').map(s => s.trim()).filter(Boolean)"
-          class="input-mono"
-          :placeholder="$t('channels.allowed_users_comma_placeholder')"
-        />
-        <span class="field-hint">{{ $t('channels.dingtalk_allowed_hint') }}</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- Feishu -->
-  <div class="card">
-    <div class="card-head">
-      <h3><span class="im-dot" :style="{ background: imDotColor('feishu', channels.feishu.enable) }"></span> {{ $t('channels.feishu_title') }}</h3>
-      <div class="card-head-actions">
-        <span v-if="channels.feishu.enable" class="badge badge-green"><span class="badge-dot"></span>{{ $t('common.enabled') }}</span>
-        <button
-          :class="['toggle', { on: channels.feishu.enable }]"
-          @click="channels.feishu.enable = !channels.feishu.enable"
-        >
-          <span class="thumb"></span>
-        </button>
-      </div>
-    </div>
-    <div class="card-body" v-if="channels.feishu.enable">
-      <div class="grid grid-2">
-        <div class="field">
-          <label class="field-label">app_id</label>
-          <input type="text" v-model="channels.feishu.app_id" class="input-mono" :placeholder="$t('channels.feishu_app_id_placeholder')" />
-        </div>
-        <div class="field">
-          <label class="field-label">app_secret</label>
-          <input type="password" v-model="channels.feishu.app_secret" class="input-mono" :placeholder="$t('channels.feishu_app_secret_placeholder')" />
-        </div>
-      </div>
-      <div class="grid grid-2">
-        <div class="field">
-          <label class="field-label">verification_token</label>
-          <input type="text" v-model="channels.feishu.verification_token" class="input-mono" :placeholder="$t('channels.feishu_verify_placeholder')" />
-        </div>
-        <div class="field">
-          <label class="field-label">encrypt_key</label>
-          <input type="password" v-model="channels.feishu.encrypt_key" class="input-mono" :placeholder="$t('channels.feishu_encrypt_placeholder')" />
-          <span class="field-hint">{{ $t('channels.feishu_encrypt_hint') }}</span>
-        </div>
-      </div>
-      <div class="field">
-        <label class="field-label">webhook_bind</label>
-        <input type="text" v-model="channels.feishu.webhook_bind" class="input-mono" placeholder="0.0.0.0:9000" />
-        <span class="field-hint">{{ $t('channels.feishu_webhook_hint') }}</span>
-      </div>
-      <div class="field">
-        <label class="field-label">allowed_users</label>
-        <input
-          type="text"
-          :value="channels.feishu.allowed_users.join(', ')"
-          @input="channels.feishu.allowed_users = ($event.target as HTMLInputElement).value.split(',').map(s => s.trim()).filter(Boolean)"
-          class="input-mono"
-          :placeholder="$t('channels.allowed_users_comma_placeholder')"
-        />
-        <span class="field-hint">{{ $t('channels.feishu_allowed_hint') }}</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- Telegram -->
-  <div class="card">
-    <div class="card-head">
-      <h3><span class="im-dot" :style="{ background: imDotColor('telegram', channels.telegram.enable) }"></span> Telegram</h3>
-      <div class="card-head-actions">
-        <span v-if="channels.telegram.enable" class="badge badge-green"><span class="badge-dot"></span>{{ $t('common.enabled') }}</span>
-        <button
-          :class="['toggle', { on: channels.telegram.enable }]"
-          @click="channels.telegram.enable = !channels.telegram.enable"
-        >
-          <span class="thumb"></span>
-        </button>
-      </div>
-    </div>
-    <div class="card-body" v-if="channels.telegram.enable">
-      <div class="field">
-        <label class="field-label">Bot Token</label>
-        <input
-          type="password"
-          v-model="channels.telegram.bot_token"
-          class="input-mono"
-          :placeholder="$t('channels.telegram_token_placeholder')"
-        />
-      </div>
-      <div class="field">
-        <label class="field-label">API Base URL</label>
-        <input
-          type="text"
-          v-model="channels.telegram.api_base"
-          class="input-mono"
-          :placeholder="$t('channels.telegram_api_placeholder')"
-        />
-      </div>
-      <div class="field">
-        <label class="field-label">{{ $t('channels.allowed_users') }}</label>
-        <textarea
-          class="input-mono"
-          :value="channels.telegram.allowed_users.join('\n')"
-          @input="channels.telegram.allowed_users = ($event.target as HTMLTextAreaElement).value.split('\n').filter(Boolean)"
-          :placeholder="$t('channels.allowed_users_placeholder')"
-        ></textarea>
       </div>
     </div>
   </div>
