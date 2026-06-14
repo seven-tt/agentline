@@ -9,13 +9,13 @@ REPO="seven-tt/agentline"
 REPO_URL="https://github.com/$REPO"
 
 # ── parse args ───────────────────────────────────────────────────
-INSTALL_TRAY=false
+INSTALL_TRAY=auto
 for arg in "$@"; do
     case "$arg" in
-        --tray) INSTALL_TRAY=true ;;
+        --headless) INSTALL_TRAY=false ;;
         --help|-h)
-            echo "Usage: $0 [--tray]"
-            echo "  --tray  Also install system tray app"
+            echo "Usage: $0 [--headless]"
+            echo "  --headless  Only install CLI (no tray app)"
             exit 0
             ;;
     esac
@@ -44,6 +44,16 @@ case "$OS-$ARCH" in
         exit 1
         ;;
 esac
+
+# ── decide whether to install tray ───────────────────────────────
+if [[ "$INSTALL_TRAY" == "auto" ]]; then
+    if [[ "$OS" == "linux" ]] && [[ -z "${DISPLAY:-}" ]] && [[ -z "${WAYLAND_DISPLAY:-}" ]] && [[ "${XDG_SESSION_TYPE:-}" != "x11" ]] && [[ "${XDG_SESSION_TYPE:-}" != "wayland" ]]; then
+        INSTALL_TRAY=false
+        echo "No graphical display detected, installing headless (CLI only)."
+    else
+        INSTALL_TRAY=true
+    fi
+fi
 
 # ── install dir ──────────────────────────────────────────────────
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
