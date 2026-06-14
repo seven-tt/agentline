@@ -35,8 +35,8 @@ impl Error {
     }
 }
 
-impl From<Error> for agentline_bridge::Error {
+impl From<Error> for agentline_im_core::Error {
     fn from(e: Error) -> Self {
-        agentline_bridge::Error::im(e.to_string())
+        agentline_im_core::Error::im(e.to_string())
     }
 }

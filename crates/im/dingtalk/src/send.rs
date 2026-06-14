@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::stream::WebhookCache;
 use crate::types::SessionWebhookText;
-use agentline_bridge::types::PeerRef;
+use agentline_im_core::types::PeerRef;
 use std::time::Duration;
 
 /// Reply to a peer using the most recent `sessionWebhook` we cached for them.

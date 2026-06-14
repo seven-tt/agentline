@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime};
 /// `🔧 Shell（find ./x）` or `📖 FileRead（./a.rs）`. The status mark (✅/❌)
 /// and session tag are prepended by the caller, keeping status at the front.
 pub fn tool_label(kind: ToolKind, arg: &str) -> String {
-    format!("{} {}（{}）", kind.emoji(), kind.name(), arg)
+    format!("{} {}({})", kind.emoji(), kind.name(), arg)
 }
 
 /// Strip the working-directory prefix from a path-like string, returning a
@@ -36,7 +36,7 @@ pub fn truncate(s: &str, max_chars: usize) -> String {
     }
     if end < s.len() {
         let mut out = s[..end].to_string();
-        out.push_str("…(截断)");
+        out.push('…');
         out
     } else {
         s.to_string()
@@ -67,28 +67,28 @@ pub fn fmt_local(t: SystemTime) -> String {
     )
 }
 
-/// Human-friendly elapsed time, e.g. `3秒`, `5分钟`, `2小时12分`, `1天3小时`.
+/// Human-friendly elapsed time, e.g. `5s`, `2m`, `1h12m`, `1d3h`.
 pub fn fmt_ago(d: Duration) -> String {
     let secs = d.as_secs();
     if secs < 60 {
-        format!("{secs}秒")
+        format!("{secs}s")
     } else if secs < 3600 {
-        format!("{}分钟", secs / 60)
+        format!("{}m", secs / 60)
     } else if secs < 86_400 {
         let h = secs / 3600;
         let m = (secs % 3600) / 60;
         if m == 0 {
-            format!("{h}小时")
+            format!("{h}h")
         } else {
-            format!("{h}小时{m}分")
+            format!("{h}h{m}m")
         }
     } else {
         let days = secs / 86_400;
         let h = (secs % 86_400) / 3600;
         if h == 0 {
-            format!("{days}天")
+            format!("{days}d")
         } else {
-            format!("{days}天{h}小时")
+            format!("{days}d{h}h")
         }
     }
 }
@@ -99,10 +99,10 @@ mod tests {
 
     #[test]
     fn fmt_ago_buckets() {
-        assert_eq!(fmt_ago(Duration::from_secs(5)), "5秒");
-        assert_eq!(fmt_ago(Duration::from_secs(120)), "2分钟");
-        assert_eq!(fmt_ago(Duration::from_secs(3700)), "1小时1分");
-        assert_eq!(fmt_ago(Duration::from_secs(90_000)), "1天1小时");
+        assert_eq!(fmt_ago(Duration::from_secs(5)), "5s");
+        assert_eq!(fmt_ago(Duration::from_secs(120)), "2m");
+        assert_eq!(fmt_ago(Duration::from_secs(3700)), "1h1m");
+        assert_eq!(fmt_ago(Duration::from_secs(90_000)), "1d1h");
     }
 
     #[test]
@@ -118,7 +118,7 @@ mod tests {
     fn truncate_unicode() {
         let t = truncate("你好世界你好", 3);
         assert!(t.starts_with("你好世"));
-        assert!(t.ends_with("(截断)"));
+        assert!(t.ends_with('…'));
     }
 
     #[test]

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use agentline_bridge::SessionRegistry;
+use agentline_bridge::{Bridge, SessionRegistry};
 use agentline_im_wechat::{HttpClient, request_qr, wait_for_scan};
 use axum::Router;
 use axum::extract::{Path, State};
@@ -23,6 +23,7 @@ pub struct Web {
     login: Arc<Mutex<LoginState>>,
     bridge_trigger: Arc<tokio::sync::Notify>,
     registry: Arc<SessionRegistry>,
+    bridge: Arc<std::sync::OnceLock<Bridge>>,
     start_time: Instant,
 }
 
@@ -39,13 +40,18 @@ pub fn start(
     bind: &str,
     bridge_trigger: Arc<tokio::sync::Notify>,
     registry: Arc<SessionRegistry>,
-) -> tokio::task::JoinHandle<()> {
+) -> (
+    tokio::task::JoinHandle<()>,
+    Arc<std::sync::OnceLock<Bridge>>,
+) {
     let bind = bind.to_string();
+    let bridge_holder: Arc<std::sync::OnceLock<Bridge>> = Arc::new(std::sync::OnceLock::new());
     let app_state = Web {
         cfg,
         login: Arc::new(Mutex::new(LoginState::default())),
         bridge_trigger,
         registry,
+        bridge: bridge_holder.clone(),
         start_time: Instant::now(),
     };
 
@@ -82,7 +88,7 @@ pub fn start(
         .route("/api/logs", get(api_logs))
         .with_state(app_state);
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let listener = match tokio::net::TcpListener::bind(&bind).await {
             Ok(l) => l,
             Err(e) => {
@@ -94,7 +100,8 @@ pub fn start(
         if let Err(e) = axum::serve(listener, router).await {
             tracing::error!(error=%e, "web server stopped");
         }
-    })
+    });
+    (handle, bridge_holder)
 }
 
 async fn serve_index() -> Html<&'static str> {
@@ -103,9 +110,8 @@ async fn serve_index() -> Html<&'static str> {
 
 fn config_path(w: &Web) -> PathBuf {
     w.cfg
-        .state_path()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("config.toml")))
+        .config_path
+        .clone()
         .unwrap_or_else(crate::config::default_config_path)
 }
 
@@ -219,9 +225,6 @@ struct FeishuChannelOut {
     enable: bool,
     app_id: String,
     app_secret: String,
-    verification_token: String,
-    encrypt_key: String,
-    webhook_bind: String,
     allowed_users: Vec<String>,
 }
 
@@ -260,9 +263,6 @@ async fn api_channels_get(State(w): State<Web>) -> axum::Json<ChannelsOut> {
             enable: im.feishu.enable,
             app_id: im.feishu.app_id.clone(),
             app_secret: im.feishu.app_secret.clone(),
-            verification_token: im.feishu.verification_token.clone(),
-            encrypt_key: im.feishu.encrypt_key.clone(),
-            webhook_bind: im.feishu.webhook_bind.clone(),
             allowed_users: im.feishu.allowed_users.clone(),
         },
         telegram: TelegramChannelOut {
@@ -306,9 +306,6 @@ struct FeishuChannelIn {
     enable: Option<bool>,
     app_id: Option<String>,
     app_secret: Option<String>,
-    verification_token: Option<String>,
-    encrypt_key: Option<String>,
-    webhook_bind: Option<String>,
     allowed_users: Option<Vec<String>>,
 }
 
@@ -379,15 +376,6 @@ async fn api_channels_set(
         }
         if let Some(ref v) = fs.app_secret {
             updated = set_toml_key(&updated, "im.feishu", "app_secret", v);
-        }
-        if let Some(ref v) = fs.verification_token {
-            updated = set_toml_key(&updated, "im.feishu", "verification_token", v);
-        }
-        if let Some(ref v) = fs.encrypt_key {
-            updated = set_toml_key(&updated, "im.feishu", "encrypt_key", v);
-        }
-        if let Some(ref v) = fs.webhook_bind {
-            updated = set_toml_key(&updated, "im.feishu", "webhook_bind", v);
         }
         if let Some(ref v) = fs.allowed_users {
             updated = set_toml_string_array(&updated, "im.feishu", "allowed_users", v);
@@ -529,6 +517,7 @@ struct AgentConfigs {
     qoder: QoderConfigOut,
     opencode: OpencodeConfigOut,
     kimi: KimiConfigOut,
+    gemini: GeminiConfigOut,
 }
 
 #[derive(Serialize)]
@@ -536,6 +525,7 @@ struct CodexConfigOut {
     model: String,
     sandbox_mode: String,
     approval_mode: String,
+    api_key: String,
 }
 
 #[derive(Serialize)]
@@ -554,81 +544,27 @@ struct KimiConfigOut {
     access_token: String,
 }
 
-const KNOWN_AGENTS: &[(&str, &str)] = &[
-    ("claude-code", "claude"),
-    ("kimi", "kimi"),
-    ("qoder", "qodercli"),
-    ("opencode", "opencode"),
-    ("kiro", "kiro-cli"),
-    ("gemini", "gemini"),
-    ("hermes", "hermes"),
-    ("codex", "codex"),
-    ("acp", ""),
-];
-
-fn detect_agent(_id: &str, cmd: &str) -> (bool, Option<String>) {
-    if cmd.is_empty() {
-        return (false, None);
-    }
-    let installed = which::which(cmd).is_ok();
-    let version = if installed {
-        std::process::Command::new(cmd)
-            .arg("--version")
-            .output()
-            .ok()
-            .and_then(|o| {
-                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if s.is_empty() {
-                    String::from_utf8_lossy(&o.stderr)
-                        .lines()
-                        .next()
-                        .map(|l| l.trim().to_string())
-                } else {
-                    // Extract version number from output like "claude-code 1.0.16"
-                    Some(
-                        s.lines()
-                            .next()
-                            .unwrap_or(&s)
-                            .trim()
-                            .rsplit(' ')
-                            .next()
-                            .unwrap_or(&s)
-                            .trim_start_matches('v')
-                            .to_string(),
-                    )
-                }
-            })
-    } else {
-        None
-    };
-    (installed, version)
+#[derive(Serialize)]
+struct GeminiConfigOut {
+    api_key: String,
 }
 
-fn agent_status(id: &str, installed: bool) -> &'static str {
-    if !installed {
-        return "not_installed";
-    }
-    match id {
-        "qoder" | "kimi" | "gemini" | "kiro" | "hermes" => "needs_login",
-        _ => "ready",
-    }
-}
+use crate::agents::{AGENTS, detect_agent};
 
 async fn api_agents(State(w): State<Web>) -> axum::Json<AgentsOut> {
-    let list: Vec<AgentItem> = KNOWN_AGENTS
+    let cfg = reload_cfg(&w);
+    let list: Vec<AgentItem> = AGENTS
         .iter()
-        .map(|&(id, cmd)| {
-            let (installed, version) = detect_agent(id, cmd);
+        .map(|meta| {
+            let (installed, version) = detect_agent(meta.cli_cmd);
             AgentItem {
-                id: id.to_string(),
+                id: meta.id.to_string(),
                 installed,
                 version,
-                status: agent_status(id, installed).to_string(),
+                status: meta.status(installed, &cfg.agent).to_string(),
             }
         })
         .collect();
-
-    let cfg = reload_cfg(&w);
 
     axum::Json(AgentsOut {
         backend: cfg.agent.backend.clone(),
@@ -647,6 +583,7 @@ async fn api_agents(State(w): State<Web>) -> axum::Json<AgentsOut> {
                 } else {
                     cfg.agent.codex.approval_mode.clone()
                 },
+                api_key: cfg.agent.codex.api_key.clone(),
             },
             qoder: QoderConfigOut {
                 personal_access_token: cfg.agent.qoder.personal_access_token.clone(),
@@ -657,6 +594,9 @@ async fn api_agents(State(w): State<Web>) -> axum::Json<AgentsOut> {
             },
             kimi: KimiConfigOut {
                 access_token: cfg.agent.kimi.access_token.clone(),
+            },
+            gemini: GeminiConfigOut {
+                api_key: cfg.agent.gemini.api_key.clone(),
             },
         },
     })
@@ -669,6 +609,7 @@ struct AgentConfigIn {
     qoder: Option<QoderConfigIn>,
     opencode: Option<OpencodeConfigIn>,
     kimi: Option<KimiConfigIn>,
+    gemini: Option<GeminiConfigIn>,
 }
 
 #[derive(Deserialize)]
@@ -676,6 +617,7 @@ struct CodexConfigIn {
     model: Option<String>,
     sandbox_mode: Option<String>,
     approval_mode: Option<String>,
+    api_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -692,6 +634,11 @@ struct OpencodeConfigIn {
 #[derive(Deserialize)]
 struct KimiConfigIn {
     access_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GeminiConfigIn {
+    api_key: Option<String>,
 }
 
 async fn api_agents_config(
@@ -718,6 +665,9 @@ async fn api_agents_config(
         if let Some(ref v) = c.approval_mode {
             updated = set_toml_key(&updated, "agent.codex", "approval_mode", v);
         }
+        if let Some(ref v) = c.api_key {
+            updated = set_toml_key(&updated, "agent.codex", "api_key", v);
+        }
     }
     if let Some(ref q) = body.qoder
         && let Some(ref v) = q.personal_access_token
@@ -737,6 +687,11 @@ async fn api_agents_config(
     {
         updated = set_toml_key(&updated, "agent.kimi", "access_token", v);
     }
+    if let Some(ref g) = body.gemini
+        && let Some(ref v) = g.api_key
+    {
+        updated = set_toml_key(&updated, "agent.gemini", "api_key", v);
+    }
 
     if let Err(e) = std::fs::write(&path, &updated) {
         return err_response(format!("write config: {e}"));
@@ -753,46 +708,13 @@ struct InstallResult {
     error: Option<String>,
 }
 
-const INSTALL_COMMANDS: &[(&str, &[&str])] = &[
-    (
-        "claude-code",
-        &["npm", "install", "-g", "@anthropic-ai/claude-code"],
-    ),
-    (
-        "kimi",
-        &[
-            "sh",
-            "-c",
-            "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
-        ],
-    ),
-    (
-        "qoder",
-        &["sh", "-c", "curl -fsSL https://qoder.com/install | bash"],
-    ),
-    ("opencode", &["npm", "install", "-g", "opencode-ai"]),
-    (
-        "kiro",
-        &["sh", "-c", "curl -fsSL https://cli.kiro.dev/install | bash"],
-    ),
-    ("gemini", &["npm", "install", "-g", "@google/gemini-cli"]),
-    (
-        "hermes",
-        &[
-            "sh",
-            "-c",
-            "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
-        ],
-    ),
-    ("codex", &["npm", "install", "-g", "@openai/codex"]),
-];
-
 async fn api_agents_install(
     Path(id): Path<String>,
     State(w): State<Web>,
 ) -> axum::Json<InstallResult> {
-    let entry = INSTALL_COMMANDS.iter().find(|(k, _)| *k == id.as_str());
-    let Some((_, args)) = entry else {
+    let meta = AGENTS.iter().find(|m| m.id == id.as_str());
+    let args = meta.and_then(|m| m.install);
+    let Some(args) = args else {
         return axum::Json(InstallResult {
             success: false,
             error: Some(format!("unknown agent: {id}")),
@@ -882,13 +804,13 @@ struct CheckUpdateResult {
 }
 
 async fn api_agents_check_update(Path(id): Path<String>) -> axum::Json<CheckUpdateResult> {
-    let cmd = KNOWN_AGENTS
+    let cmd = AGENTS
         .iter()
-        .find(|(k, _)| *k == id.as_str())
-        .map(|(_, c)| *c)
+        .find(|m| m.id == id.as_str())
+        .map(|m| m.cli_cmd)
         .unwrap_or("");
 
-    let (installed, current) = detect_agent(&id, cmd);
+    let (installed, current) = detect_agent(cmd);
     if !installed {
         return axum::Json(CheckUpdateResult {
             current: None,
@@ -913,8 +835,8 @@ struct ProjectItem {
 }
 
 async fn api_projects_get(State(w): State<Web>) -> axum::Json<Vec<ProjectItem>> {
-    let items = w
-        .cfg
+    let cfg = reload_cfg(&w);
+    let items = cfg
         .projects
         .iter()
         .map(|p| ProjectItem {
@@ -939,6 +861,18 @@ async fn api_projects_set(
     if let Err(e) = std::fs::write(&path, &updated) {
         return err_response(format!("write: {e}"));
     }
+
+    if let Some(bridge) = w.bridge.get() {
+        let bridge_projects: Vec<agentline_bridge::Project> = projects
+            .iter()
+            .map(|p| agentline_bridge::Project {
+                name: p.name.clone(),
+                git_url: p.git_url.clone(),
+            })
+            .collect();
+        bridge.update_projects(bridge_projects);
+    }
+
     ok_response("saved")
 }
 

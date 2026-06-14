@@ -180,6 +180,17 @@ impl PermissionPolicy {
         }
     }
 
+    pub fn resolve_and_apply(
+        &mut self,
+        tool_kind: ToolKind,
+        response: PermResponse,
+        what: &str,
+    ) -> PermResponse {
+        let effective = self.effective_response(tool_kind, response, what);
+        self.apply_response(tool_kind, effective, what);
+        effective
+    }
+
     /// Summary of granted permissions for display in `/sessions`.
     pub fn grant_summary(&self) -> String {
         let mut parts = Vec::new();
@@ -196,32 +207,24 @@ impl PermissionPolicy {
             }
         }
         if parts.is_empty() {
-            "无".to_string()
+            "-".to_string()
         } else {
-            parts.join("、")
+            parts.join(", ")
         }
     }
 }
 
 /// Extract the shell command name (first word) from a tool label string.
 ///
-/// The `what` format is `"🔧 Shell（<command>）"` as produced by
+/// The `what` format is `"🔧 Shell(<command>)"` as produced by
 /// `format::tool_label(ToolKind::Shell, cmd)`.
 pub fn extract_shell_cmd(what: &str) -> Option<&str> {
-    let inner = what.split('（').nth(1)?.strip_suffix('）')?;
+    let inner = what.split('(').nth(1)?.strip_suffix(')')?;
     inner.split_whitespace().next()
 }
 
 fn kind_label(k: &ToolKind) -> &'static str {
-    match k {
-        ToolKind::Shell => "Shell",
-        ToolKind::FileRead => "读文件",
-        ToolKind::FileEdit => "改文件",
-        ToolKind::FileWrite => "写文件",
-        ToolKind::Search => "搜索",
-        ToolKind::Web => "Web",
-        ToolKind::Other => "其他",
-    }
+    k.name()
 }
 
 #[cfg(test)]
@@ -229,11 +232,11 @@ mod tests {
     use super::*;
 
     fn shell_what(cmd: &str) -> String {
-        format!("🔧 Shell（{}）", cmd)
+        format!("🔧 Shell({})", cmd)
     }
 
     fn file_what(path: &str) -> String {
-        format!("📖 FileRead（{}）", path)
+        format!("📖 FileRead({})", path)
     }
 
     #[test]
@@ -359,7 +362,7 @@ mod tests {
         p.apply_response(ToolKind::FileRead, PermResponse::Session, "");
         p.apply_response(ToolKind::Shell, PermResponse::Session, &shell_what("ls x"));
         let s = p.grant_summary();
-        assert!(s.contains("读文件"));
+        assert!(s.contains("FileRead"));
         assert!(s.contains("Shell(ls)"));
     }
 }

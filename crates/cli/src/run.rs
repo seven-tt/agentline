@@ -9,15 +9,18 @@ use agentline_agent_kimi::{KimiConfig, spawn as spawn_kimi};
 use agentline_agent_kiro::{KiroConfig, spawn as spawn_kiro};
 use agentline_agent_opencode::{OpencodeConfig, spawn as spawn_opencode};
 use agentline_agent_qoder::{QoderConfig, spawn as spawn_qoder};
-use agentline_bridge::{AgentBackend, Bridge, BridgeConfig, ImChannel, SessionRegistry};
+use agentline_bridge::{
+    AgentBackend, AgentFactory, AgentInfo, AgentStatus, Bridge, BridgeConfig, SessionRegistry,
+    SourceRouter,
+};
 use agentline_im_dingtalk::{DingtalkChannel, OpenParams, StreamConfig};
 use agentline_im_feishu::{FeishuChannel, FeishuConfig};
 use agentline_im_telegram::{TelegramChannel, TelegramConfig};
 use agentline_im_wechat::{HttpClient, WechatChannel};
 use anyhow::{Context, Result, anyhow, bail};
+use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 pub async fn run(cfg: AppConfig) -> Result<()> {
     // Single-instance guard: refuse to start if another daemon already holds
@@ -29,18 +32,21 @@ pub async fn run(cfg: AppConfig) -> Result<()> {
     let bridge_trigger = std::sync::Arc::new(tokio::sync::Notify::new());
     let registry = Arc::new(SessionRegistry::new());
 
-    if cfg.web.enable {
+    let web_bridge_holder = if cfg.web.enable {
         let cfg_for_web = std::sync::Arc::new(cfg.clone());
-        crate::web::start(
+        let (_handle, holder) = crate::web::start(
             cfg_for_web,
             &cfg.web.bind,
             std::sync::Arc::clone(&bridge_trigger),
             Arc::clone(&registry),
         );
-    }
+        Some(holder)
+    } else {
+        None
+    };
 
     loop {
-        match try_run_bridge(&cfg, Arc::clone(&registry)).await {
+        match try_run_bridge(&cfg, Arc::clone(&registry), web_bridge_holder.clone()).await {
             Ok(()) => return Ok(()),
             Err(e) => {
                 tracing::error!(error=%e, "bridge unavailable; waiting for login trigger");
@@ -87,7 +93,11 @@ fn acquire_single_instance_lock(cfg: &AppConfig) -> Result<()> {
     Ok(())
 }
 
-async fn try_run_bridge(cfg: &AppConfig, registry: Arc<SessionRegistry>) -> Result<()> {
+async fn try_run_bridge(
+    cfg: &AppConfig,
+    registry: Arc<SessionRegistry>,
+    web_bridge: Option<Arc<std::sync::OnceLock<Bridge>>>,
+) -> Result<()> {
     rust_i18n::set_locale(&cfg.bridge.locale);
 
     agentline_agent_acp::cleanup_orphaned_agent(&agent_pid_path(cfg));
@@ -98,6 +108,7 @@ async fn try_run_bridge(cfg: &AppConfig, registry: Arc<SessionRegistry>) -> Resu
     }
 
     let agent: Arc<dyn AgentBackend> = build_agent(cfg).await?;
+    let agent_factory: Arc<dyn AgentFactory> = Arc::new(RuntimeAgentFactory { cfg: cfg.clone() });
 
     let (default_cwd, session_base_dir) = if cfg.bridge.default_cwd.trim().is_empty() {
         let state_dir = crate::config::expand_tilde(&cfg.bridge.state_dir);
@@ -119,14 +130,14 @@ async fn try_run_bridge(cfg: &AppConfig, registry: Arc<SessionRegistry>) -> Resu
         })
         .collect();
 
-    // Spawn a Bridge per enabled IM — each runs in its own tokio task,
-    // all sharing the same agent backend.
-    let mut abort_handles: Vec<tokio::task::AbortHandle> = Vec::new();
-    let mut join_handles: Vec<tokio::task::JoinHandle<Result<()>>> = Vec::new();
+    // Build all IM adapters and register them with a single SourceRouter.
+    let mut router = SourceRouter::new();
+    let mut registered = 0usize;
 
     for im_name in &enabled {
-        match build_im(cfg, im_name).await {
-            Ok((im, inbound_rx, typing_ms)) => {
+        match build_im_source(cfg, im_name).await {
+            Ok(adapter) => {
+                router.register_im(adapter);
                 registry.update(
                     im_name,
                     agentline_bridge::ImSnapshot {
@@ -134,32 +145,10 @@ async fn try_run_bridge(cfg: &AppConfig, registry: Arc<SessionRegistry>) -> Resu
                         sessions: vec![],
                     },
                 );
-
-                let bridge_cfg = BridgeConfig {
-                    default_cwd: default_cwd.clone(),
-                    typing_interval: Duration::from_millis(typing_ms),
-                    session_idle_timeout: Duration::from_secs(cfg.bridge.session_idle_timeout_secs),
-                    agent_name: cfg.agent.backend.clone(),
-                    projects: projects.clone(),
-                    session_base_dir: session_base_dir.clone(),
-                    im_id: im_name.to_string(),
-                    registry: Some(registry.clone()),
-                };
-
-                let bridge = Bridge::new(im, agent.clone(), bridge_cfg);
-                let name = im_name.to_string();
-                let handle = tokio::spawn(async move {
-                    tracing::info!(im = %name, "bridge loop started");
-                    bridge
-                        .run(inbound_rx)
-                        .await
-                        .map_err(|e| anyhow!("bridge[{name}]: {e}"))
-                });
-                abort_handles.push(handle.abort_handle());
-                join_handles.push(handle);
+                registered += 1;
             }
             Err(e) => {
-                tracing::error!(im = %im_name, error = %e, "failed to build IM channel; skipping");
+                tracing::error!(im = %im_name, error = %e, "failed to build IM adapter; skipping");
                 registry.update(
                     im_name,
                     agentline_bridge::ImSnapshot {
@@ -171,37 +160,50 @@ async fn try_run_bridge(cfg: &AppConfig, registry: Arc<SessionRegistry>) -> Resu
         }
     }
 
-    if join_handles.is_empty() {
+    if registered == 0 {
         bail!("all enabled IM backends failed to start");
     }
+
+    let bridge_cfg = BridgeConfig {
+        default_cwd: default_cwd.clone(),
+        typing_interval: Duration::from_secs(30),
+        session_idle_timeout: Duration::from_secs(cfg.bridge.session_idle_timeout_secs),
+        agent_name: cfg.agent.backend.clone(),
+        projects: projects.clone(),
+        session_base_dir: session_base_dir.clone(),
+        registry: Some(registry.clone()),
+        config_path: cfg.config_path.clone(),
+    };
+
+    let (bridge, actor_handle) = Bridge::from_router(
+        router,
+        agent.clone(),
+        bridge_cfg,
+        std::sync::Arc::new(agentline_im_core::ImInboundHandler::new()),
+    );
+    if let Some(ref holder) = web_bridge {
+        let _ = holder.set(bridge.clone());
+    }
+    let _bridge = bridge.with_agent_factory(agent_factory.clone());
 
     tracing::info!(
         cwd = %default_cwd.display(),
         ims = ?enabled,
         agent = %cfg.agent.backend,
-        "agentline ready; {} bridge(s) running",
-        join_handles.len()
+        "agentline ready; {registered} adapter(s) registered via SourceRouter",
     );
 
     let agent_for_shutdown = agent;
-    let join_future = futures::future::join_all(join_handles);
 
     tokio::select! {
-        results = join_future => {
-            for r in results {
-                match r {
-                    Ok(Err(e)) => tracing::error!(error = %e, "bridge exited with error"),
-                    Err(e) => tracing::error!(error = %e, "bridge task panicked"),
-                    Ok(Ok(())) => {}
-                }
+        result = actor_handle => {
+            if let Err(e) = result {
+                tracing::error!(error = %e, "bridge actor task panicked");
             }
             agent_for_shutdown.shutdown().await;
         }
         sig = shutdown_signal() => {
             tracing::info!(signal = sig, "shutdown signal received; terminating agent");
-            for h in &abort_handles {
-                h.abort();
-            }
             agent_for_shutdown.shutdown().await;
         }
     }
@@ -226,24 +228,97 @@ async fn build_agent(cfg: &AppConfig) -> Result<Arc<dyn AgentBackend>> {
     }
 }
 
-async fn build_im(
+/// Build an IM adapter implementing InputSource + ImAdapter for the new
+/// SourceRouter architecture. The adapter is created in deferred-start mode
+/// — `InputSource::start()` is called later by the SourceRouter.
+async fn build_im_source(
     cfg: &AppConfig,
     name: &str,
-) -> Result<(
-    Arc<dyn ImChannel>,
-    mpsc::Receiver<agentline_bridge::types::InboundMessage>,
-    u64,
-)> {
+) -> Result<Arc<dyn agentline_bridge::ImAdapter>> {
     match name {
-        "wechat" => build_wechat(cfg).await,
-        "dingtalk" => build_dingtalk(cfg).await,
-        "feishu" => build_feishu(cfg).await,
-        "telegram" => build_telegram(cfg).await,
+        "wechat" => build_wechat_source(cfg).await,
+        "dingtalk" => build_dingtalk_source(cfg),
+        "feishu" => build_feishu_source(cfg).await,
+        "telegram" => build_telegram_source(cfg),
         other => bail!(
             "im backend {:?}: unsupported (try `wechat`, `dingtalk`, `feishu`, or `telegram`)",
             other
         ),
     }
+}
+
+fn build_dingtalk_source(cfg: &AppConfig) -> Result<Arc<dyn agentline_bridge::ImAdapter>> {
+    if cfg.im.dingtalk.client_id.is_empty() || cfg.im.dingtalk.client_secret.is_empty() {
+        bail!(
+            "dingtalk requires `im.dingtalk.client_id` and `im.dingtalk.client_secret` in config"
+        );
+    }
+    let stream_cfg = StreamConfig {
+        open: OpenParams {
+            client_id: cfg.im.dingtalk.client_id.clone(),
+            client_secret: cfg.im.dingtalk.client_secret.clone(),
+            user_agent: format!("agentline/{}", env!("CARGO_PKG_VERSION")),
+        },
+        allowed_users: cfg.im.dingtalk.allowed_users.clone(),
+        buffer: 32,
+    };
+    let channel = DingtalkChannel::new(stream_cfg).map_err(|e| anyhow!("dingtalk: {e}"))?;
+    Ok(Arc::new(channel))
+}
+
+fn build_telegram_source(cfg: &AppConfig) -> Result<Arc<dyn agentline_bridge::ImAdapter>> {
+    if cfg.im.telegram.bot_token.is_empty() {
+        bail!("telegram requires `im.telegram.bot_token` in config");
+    }
+    let tg_cfg = TelegramConfig {
+        bot_token: cfg.im.telegram.bot_token.clone(),
+        allowed_users: cfg.im.telegram.allowed_users.clone(),
+        api_base: cfg.im.telegram.api_base.clone(),
+    };
+    let channel = TelegramChannel::new(tg_cfg).map_err(|e| anyhow!("telegram: {e}"))?;
+    Ok(Arc::new(channel))
+}
+
+async fn build_feishu_source(cfg: &AppConfig) -> Result<Arc<dyn agentline_bridge::ImAdapter>> {
+    if cfg.im.feishu.app_id.is_empty() || cfg.im.feishu.app_secret.is_empty() {
+        bail!("feishu requires `im.feishu.app_id` and `im.feishu.app_secret` in config");
+    }
+    let feishu_cfg = FeishuConfig {
+        app_id: cfg.im.feishu.app_id.clone(),
+        app_secret: cfg.im.feishu.app_secret.clone(),
+        allowed_users: cfg.im.feishu.allowed_users.clone(),
+    };
+    let channel = FeishuChannel::new(feishu_cfg)
+        .await
+        .map_err(|e| anyhow!("feishu: {e}"))?;
+    Ok(Arc::new(channel))
+}
+
+async fn build_wechat_source(cfg: &AppConfig) -> Result<Arc<dyn agentline_bridge::ImAdapter>> {
+    let state_path = cfg.state_path()?;
+    let state = AppState::load_or_default(&state_path).context("load state")?;
+    let token = state
+        .im
+        .wechat
+        .bot_token
+        .clone()
+        .ok_or_else(|| anyhow!("no bot_token in state — run `agentline login` first"))?;
+    let cursor = state.im.wechat.get_updates_buf.clone();
+
+    let http = HttpClient::new().context("build http client")?;
+    http.set_token(token).await;
+    if let Some(b) = state.im.wechat.bot_baseurl.clone() {
+        http.set_base_url(b).await;
+    }
+    let persist = FileCursorPersist::new(state_path.clone());
+    let channel = WechatChannel::new(
+        http,
+        cursor,
+        persist,
+        cfg.im.wechat.allowed_users.clone(),
+        state.im.wechat.context_tokens.clone(),
+    );
+    Ok(Arc::new(channel))
 }
 
 /// Resolve when the process is asked to terminate (Ctrl-C / SIGTERM).
@@ -267,113 +342,6 @@ async fn shutdown_signal() -> &'static str {
         let _ = tokio::signal::ctrl_c().await;
         "ctrl_c"
     }
-}
-
-async fn build_wechat(
-    cfg: &AppConfig,
-) -> Result<(
-    Arc<dyn ImChannel>,
-    mpsc::Receiver<agentline_bridge::types::InboundMessage>,
-    u64,
-)> {
-    let state_path = cfg.state_path()?;
-    let state = AppState::load_or_default(&state_path).context("load state")?;
-    let token = state
-        .im
-        .wechat
-        .bot_token
-        .clone()
-        .ok_or_else(|| anyhow!("no bot_token in state — run `agentline login` first"))?;
-    let cursor = state.im.wechat.get_updates_buf.clone();
-
-    let http = HttpClient::new().context("build http client")?;
-    http.set_token(token).await;
-    if let Some(b) = state.im.wechat.bot_baseurl.clone() {
-        http.set_base_url(b).await;
-    }
-    let persist = FileCursorPersist::new(state_path.clone());
-    let (channel, inbound_rx, _poll_handle, _cursor_cell) = WechatChannel::start(
-        http,
-        cursor,
-        persist,
-        cfg.im.wechat.allowed_users.clone(),
-        state.im.wechat.context_tokens.clone(),
-    );
-    Ok((
-        Arc::new(channel),
-        inbound_rx,
-        cfg.im.wechat.typing_interval_ms,
-    ))
-}
-
-async fn build_dingtalk(
-    cfg: &AppConfig,
-) -> Result<(
-    Arc<dyn ImChannel>,
-    mpsc::Receiver<agentline_bridge::types::InboundMessage>,
-    u64,
-)> {
-    if cfg.im.dingtalk.client_id.is_empty() || cfg.im.dingtalk.client_secret.is_empty() {
-        bail!(
-            "dingtalk requires `im.dingtalk.client_id` and `im.dingtalk.client_secret` in config"
-        );
-    }
-    let stream_cfg = StreamConfig {
-        open: OpenParams {
-            client_id: cfg.im.dingtalk.client_id.clone(),
-            client_secret: cfg.im.dingtalk.client_secret.clone(),
-            user_agent: format!("agentline/{}", env!("CARGO_PKG_VERSION")),
-        },
-        allowed_users: cfg.im.dingtalk.allowed_users.clone(),
-        buffer: 32,
-    };
-    let (channel, inbound_rx, _handle) =
-        DingtalkChannel::start(stream_cfg).map_err(|e| anyhow!("dingtalk: {e}"))?;
-    Ok((Arc::new(channel), inbound_rx, 60_000))
-}
-
-async fn build_feishu(
-    cfg: &AppConfig,
-) -> Result<(
-    Arc<dyn ImChannel>,
-    mpsc::Receiver<agentline_bridge::types::InboundMessage>,
-    u64,
-)> {
-    if cfg.im.feishu.app_id.is_empty() || cfg.im.feishu.app_secret.is_empty() {
-        bail!("feishu requires `im.feishu.app_id` and `im.feishu.app_secret` in config");
-    }
-    let feishu_cfg = FeishuConfig {
-        app_id: cfg.im.feishu.app_id.clone(),
-        app_secret: cfg.im.feishu.app_secret.clone(),
-        verification_token: cfg.im.feishu.verification_token.clone(),
-        encrypt_key: cfg.im.feishu.encrypt_key.clone(),
-        webhook_bind: cfg.im.feishu.webhook_bind.clone(),
-        allowed_users: cfg.im.feishu.allowed_users.clone(),
-    };
-    let (channel, inbound_rx, _handle) = FeishuChannel::start(feishu_cfg)
-        .await
-        .map_err(|e| anyhow!("feishu: {e}"))?;
-    Ok((Arc::new(channel), inbound_rx, 60_000))
-}
-
-async fn build_telegram(
-    cfg: &AppConfig,
-) -> Result<(
-    Arc<dyn ImChannel>,
-    mpsc::Receiver<agentline_bridge::types::InboundMessage>,
-    u64,
-)> {
-    if cfg.im.telegram.bot_token.is_empty() {
-        bail!("telegram requires `im.telegram.bot_token` in config");
-    }
-    let tg_cfg = TelegramConfig {
-        bot_token: cfg.im.telegram.bot_token.clone(),
-        allowed_users: cfg.im.telegram.allowed_users.clone(),
-        api_base: cfg.im.telegram.api_base.clone(),
-    };
-    let (channel, inbound_rx, _handle) =
-        TelegramChannel::start(tg_cfg).map_err(|e| anyhow!("telegram: {e}"))?;
-    Ok((Arc::new(channel), inbound_rx, 5_000))
 }
 
 fn agent_pid_path(cfg: &AppConfig) -> std::path::PathBuf {
@@ -611,6 +579,105 @@ fn parse_approval(s: &str) -> Option<ApprovalMode> {
         "on-failure" => Some(ApprovalMode::OnFailure),
         "untrusted" => Some(ApprovalMode::Untrusted),
         _ => None,
+    }
+}
+
+struct RuntimeAgentFactory {
+    cfg: AppConfig,
+}
+
+const ALL_AGENTS: &[&str] = &[
+    "claude-code",
+    "kimi",
+    "qoder",
+    "opencode",
+    "kiro",
+    "gemini",
+    "hermes",
+    "codex",
+    "acp",
+];
+
+#[async_trait]
+impl AgentFactory for RuntimeAgentFactory {
+    fn available(&self) -> Vec<String> {
+        ALL_AGENTS.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn available_with_status(&self, _current_agent: &str) -> Vec<AgentInfo> {
+        use crate::agents::{AGENTS, detect_agent};
+        AGENTS
+            .iter()
+            .map(|meta| {
+                let (installed, _version) = detect_agent(meta.cli_cmd);
+                let st = meta.status(installed, &self.cfg.agent);
+                let status = match st {
+                    "ready" => AgentStatus::Ready,
+                    "needs_login" => AgentStatus::Installed,
+                    _ => AgentStatus::NotInstalled,
+                };
+                AgentInfo {
+                    name: meta.id.to_string(),
+                    status,
+                }
+            })
+            .collect()
+    }
+
+    async fn build(&self, name: &str) -> agentline_bridge::Result<Arc<dyn AgentBackend>> {
+        let agent: Arc<dyn AgentBackend> = match name {
+            "claude-code" => Arc::new(
+                build_claude_code(&self.cfg)
+                    .await
+                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
+            ),
+            "kimi" => Arc::new(
+                build_kimi(&self.cfg)
+                    .await
+                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
+            ),
+            "qoder" => Arc::new(
+                build_qoder(&self.cfg)
+                    .await
+                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
+            ),
+            "opencode" => Arc::new(
+                build_opencode(&self.cfg)
+                    .await
+                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
+            ),
+            "kiro" => Arc::new(
+                build_kiro(&self.cfg)
+                    .await
+                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
+            ),
+            "gemini" => Arc::new(
+                build_gemini(&self.cfg)
+                    .await
+                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
+            ),
+            "hermes" => Arc::new(
+                build_hermes(&self.cfg)
+                    .await
+                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
+            ),
+            "codex" => Arc::new(
+                build_codex(&self.cfg)
+                    .await
+                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
+            ),
+            "acp" => Arc::new(
+                build_generic_acp(&self.cfg)
+                    .await
+                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
+            ),
+            other => {
+                return Err(agentline_bridge::Error::other(format!(
+                    "unknown agent backend: {other}"
+                )));
+            }
+        };
+        Ok(agent)
     }
 }
 

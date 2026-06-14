@@ -3,6 +3,42 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+/// Bridge-level operations. InputSources produce these from platform-specific
+/// interactions (text commands, button clicks, CLI flags, JSON messages).
+/// Bridge only receives and executes them — it never parses raw text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Command {
+    /// `/cd <path>` — with explicit path
+    Cd(PathBuf),
+    /// `/cd` — no argument, trigger interactive directory listing
+    CdInteractive,
+    /// `/new`
+    New,
+    /// `/close [#N]` — close (destroy) a session. `/stop` is an alias.
+    Close(Option<u32>),
+    /// `/cancel` — cancel the running prompt but keep the session alive.
+    Cancel,
+    /// `/agent [name]` — switch agent backend, or list available agents.
+    Agent(Option<String>),
+    /// `/sessions` — list active sessions.
+    Sessions,
+    /// `/yolo`
+    Yolo,
+    /// `/safe`
+    Safe,
+    /// `/help` or `/?`
+    Help,
+    /// Bare-token affirmative: `y`, `yes`, `是`, `好`.
+    YesToken,
+    /// Bare-token negative: `n`, `no`, `否`, `不`.
+    NoToken,
+    /// Session-level approval: `s`, `session`, `会话`.
+    SessionApprove,
+    /// Anything else — including unknown slash-commands which are forwarded
+    /// to the agent as-is.
+    Plain(String),
+}
+
 /// A project the agent can be directed to clone and develop.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Project {
@@ -94,7 +130,6 @@ impl MessageKind {
     }
 }
 
-/// Outbound media payload for ImChannel::send_media.
 #[derive(Debug, Clone)]
 pub struct Media {
     pub kind: MediaKind,
@@ -202,53 +237,6 @@ impl ToolKind {
     }
 }
 
-/// Neutral message event sent from the bridge to an IM adapter.
-///
-/// Bridge translates agent-specific `AgentUpdate` frames into these IM-neutral
-/// events. Each adapter decides how to map them to its platform wire format.
-#[derive(Debug, Clone)]
-pub enum MessageEvent {
-    /// A streaming text delta produced by the agent in real time.
-    StreamChunk { text: String },
-    /// Signals the end of a streaming text sequence.
-    StreamEnd,
-    /// A complete non-streaming text (e.g. command replies like /help).
-    PlainText(String),
-    /// A tool invocation has started.
-    ToolStart {
-        id: String,
-        kind: ToolKind,
-        label: String,
-    },
-    /// Raw stdout/stderr chunk from a running tool (often suppressed by IMs).
-    ToolProgress { id: String, output: String },
-    /// A tool invocation has finished.
-    ToolEnd {
-        id: String,
-        ok: bool,
-        summary: Option<String>,
-    },
-    /// The agent produced a plan.
-    Plan { steps: Vec<String> },
-    /// The agent needs user permission for a dangerous action.
-    PermissionRequest {
-        id: String,
-        what: String,
-        danger: PermissionDanger,
-        tag: String,
-    },
-    /// The agent is asking the user a structured question (elicitation).
-    ElicitInput {
-        id: String,
-        prompt: String,
-        schema: Option<Vec<ElicitField>>,
-    },
-    /// The agent turn has completed.
-    Done,
-    /// An error occurred inside the agent.
-    Error(String),
-}
-
 /// A single field in an elicitation form.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElicitField {
@@ -283,4 +271,216 @@ pub struct ElicitOption {
     pub value: String,
     pub label: String,
     pub description: Option<String>,
+}
+
+// ── New types for the InputSource architecture ──────────────────────────
+
+/// Parsed inbound payload: either a command or user content.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum InboundPayload {
+    /// A command recognized by the InputSource (e.g. /yolo, button click, CLI flag).
+    Command(Command),
+    /// User content to be sent to the agent.
+    Content(UserContent),
+}
+
+/// Composite user message: text + zero or more attachments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserContent {
+    pub text: Option<String>,
+    pub attachments: Vec<Attachment>,
+}
+
+impl UserContent {
+    pub fn text(s: impl Into<String>) -> Self {
+        Self {
+            text: Some(s.into()),
+            attachments: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.as_ref().is_none_or(|t| t.is_empty()) && self.attachments.is_empty()
+    }
+
+    pub fn to_prompt_text(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(ref text) = self.text {
+            parts.push(text.clone());
+        }
+        for att in &self.attachments {
+            match att.kind {
+                AttachmentKind::Image => {
+                    parts.push(format!("![image]({})", att.local_path.display()));
+                }
+                AttachmentKind::Voice => {
+                    if let Some(ref transcript) = att.transcript {
+                        parts.push(transcript.clone());
+                    } else {
+                        parts.push(format!("[voice]({})", att.local_path.display()));
+                    }
+                }
+                AttachmentKind::File => {
+                    let name = att.name.as_deref().unwrap_or("file");
+                    parts.push(format!("[file: {}]({})", name, att.local_path.display()));
+                }
+                AttachmentKind::Video => {
+                    parts.push(format!("[video]({})", att.local_path.display()));
+                }
+            }
+        }
+        parts.join("\n")
+    }
+}
+
+/// A single attachment in an inbound message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Attachment {
+    pub kind: AttachmentKind,
+    /// Local path (InputSource downloads media before handing off to Bridge).
+    pub local_path: PathBuf,
+    /// Display name (for files).
+    pub name: Option<String>,
+    /// Voice-to-text transcript (for voice attachments).
+    pub transcript: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AttachmentKind {
+    Image,
+    Voice,
+    File,
+    Video,
+}
+
+/// Inbound message with routing information (which InputSource it came from).
+/// The payload is already parsed by the InputSource's `parse_message`.
+#[derive(Debug, Clone)]
+pub struct RoutedMessage {
+    pub source_id: String,
+    pub peer: PeerRef,
+    pub payload: InboundPayload,
+    pub received_at: std::time::SystemTime,
+}
+
+// ── Bridge atomic API result types ───────────────────────────────────
+
+/// Result of `Bridge::set_yolo()`.
+#[derive(Debug, Clone)]
+pub enum YoloResult {
+    /// Yolo applied to the active session.
+    Applied { tag: String },
+    /// No active session; yolo will apply to the next session created.
+    Pending,
+}
+
+/// Result of `Bridge::set_safe()`.
+#[derive(Debug, Clone)]
+pub enum SafeResult {
+    /// Safe mode applied to the active session (yolo off + grants cleared).
+    Applied { tag: String },
+    /// No active session.
+    NoSession,
+}
+
+/// Result of `Bridge::set_cwd()`.
+#[derive(Debug, Clone)]
+pub enum CwdResult {
+    /// cwd changed, no session impact.
+    Changed,
+    /// cwd changed and the active session was closed because cwd differs.
+    SessionClosed { tag: String },
+    /// Path does not exist.
+    NotFound,
+    /// Path is not a directory.
+    NotADir,
+}
+
+/// Result of `Bridge::send_prompt()`.
+#[derive(Debug, Clone)]
+pub enum PromptResult {
+    /// Prompt dispatched immediately.
+    Started,
+    /// Another prompt is running; this one was queued.
+    Queued { tag: String },
+}
+
+/// Result of `Bridge::answer_permission()`.
+#[derive(Debug, Clone)]
+pub enum PermAnswerResult {
+    /// Permission was answered.
+    Answered {
+        effective: crate::permission::PermResponse,
+    },
+    /// No pending permission request.
+    NoPending,
+}
+
+/// Snapshot of the current session for external display.
+#[derive(Debug, Clone)]
+pub struct SessionInfoSnapshot {
+    pub short_id: u32,
+    pub session_id: String,
+    pub agent_name: String,
+    pub cwd: std::path::PathBuf,
+    pub created_at: std::time::SystemTime,
+    pub idle_duration: std::time::Duration,
+    pub is_yolo: bool,
+    pub grant_summary: String,
+}
+
+/// Parse user reply into a structured `serde_json::Value` based on the
+/// elicitation schema. If schema carries selectable options, numeric input
+/// is resolved to the corresponding option value.
+pub fn parse_elicit_response(text: &str, schema: Option<&[ElicitField]>) -> serde_json::Value {
+    let text = text.trim();
+    let Some(fields) = schema else {
+        return serde_json::Value::String(text.to_string());
+    };
+    let Some(field) = fields.first() else {
+        return serde_json::Value::String(text.to_string());
+    };
+    match &field.field_type {
+        ElicitFieldType::SingleSelect { options } => {
+            if let Ok(n) = text.parse::<usize>()
+                && n >= 1
+                && n <= options.len()
+            {
+                return serde_json::Value::String(options[n - 1].value.clone());
+            }
+            serde_json::Value::String(text.to_string())
+        }
+        ElicitFieldType::MultiSelect { options } => {
+            let indices: Vec<usize> = text
+                .split(',')
+                .filter_map(|s| s.trim().parse::<usize>().ok())
+                .collect();
+            if !indices.is_empty() && indices.iter().all(|&i| i >= 1 && i <= options.len()) {
+                let values: Vec<serde_json::Value> = indices
+                    .iter()
+                    .map(|&i| serde_json::Value::String(options[i - 1].value.clone()))
+                    .collect();
+                return serde_json::Value::Array(values);
+            }
+            serde_json::Value::String(text.to_string())
+        }
+        ElicitFieldType::Boolean => {
+            let lower = text.to_lowercase();
+            match lower.as_str() {
+                "y" | "yes" | "true" | "是" | "1" => serde_json::Value::Bool(true),
+                "n" | "no" | "false" | "否" | "0" => serde_json::Value::Bool(false),
+                _ => serde_json::Value::String(text.to_string()),
+            }
+        }
+        ElicitFieldType::Number { .. } => {
+            if let Ok(n) = text.parse::<f64>() {
+                serde_json::Number::from_f64(n)
+                    .map(serde_json::Value::Number)
+                    .unwrap_or_else(|| serde_json::Value::String(text.to_string()))
+            } else {
+                serde_json::Value::String(text.to_string())
+            }
+        }
+        ElicitFieldType::Text { .. } => serde_json::Value::String(text.to_string()),
+    }
 }
