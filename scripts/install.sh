@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Agentline Installer for macOS & Linux
 # Usage: curl -fsSL https://raw.githubusercontent.com/seven-tt/agentline/main/scripts/install.sh | bash
-#        ./install.sh [--tray]
+#        ./install.sh [--headless]
 
 REPO="seven-tt/agentline"
 REPO_URL="https://github.com/$REPO"
@@ -59,24 +59,20 @@ fi
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 mkdir -p "$INSTALL_DIR"
 
-# ── try downloading prebuilt binary from GitHub Releases ─────────
-download_binary() {
-    local bin_name="$1"
-    local latest_tag
-
-    # get latest release tag
+# ── helper: get latest tag ───────────────────────────────────────
+get_latest_tag() {
     if command -v curl &>/dev/null; then
-        latest_tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
-            | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/')
+        curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
+            | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/'
     fi
+}
 
-    if [[ -z "${latest_tag:-}" ]]; then
-        return 1
-    fi
-
-    local version="${latest_tag#v}"
+# ── helper: download a single binary ─────────────────────────────
+download_binary() {
+    local bin_name="$1" tag="$2"
+    local version="${tag#v}"
     local asset_name="${bin_name}-${version}-${LABEL}"
-    local url="$REPO_URL/releases/download/${latest_tag}/${asset_name}"
+    local url="$REPO_URL/releases/download/${tag}/${asset_name}"
 
     echo "Downloading $asset_name ..."
     if curl -fsSL -o "$INSTALL_DIR/$bin_name" "$url"; then
@@ -84,24 +80,55 @@ download_binary() {
         echo "Installed $bin_name $version -> $INSTALL_DIR/$bin_name"
         return 0
     else
-        echo "Download failed, will try building from source."
         return 1
     fi
 }
 
-# ── try prebuilt first ───────────────────────────────────────────
+# ── helper: download macOS .app bundle ───────────────────────────
+download_macos_app() {
+    local tag="$1"
+    local version="${tag#v}"
+    local zip_name="AgentlineTray-v${version}-${LABEL}.zip"
+    local url="$REPO_URL/releases/download/${tag}/${zip_name}"
+    local app_dest="/Applications/AgentlineTray.app"
+
+    echo "Downloading $zip_name ..."
+    local tmpzip
+    tmpzip="$(mktemp).zip"
+    if curl -fsSL -o "$tmpzip" "$url"; then
+        rm -rf "$app_dest"
+        unzip -qo "$tmpzip" -d /Applications/
+        rm -f "$tmpzip"
+        echo "Installed AgentlineTray.app -> $app_dest"
+        return 0
+    else
+        rm -f "$tmpzip"
+        return 1
+    fi
+}
+
+# ── try downloading prebuilt binaries ────────────────────────────
+LATEST_TAG="$(get_latest_tag)"
 NEED_BUILD=false
 
-if download_binary "agentline"; then
-    : # success
-else
-    NEED_BUILD=true
-fi
-
-if [[ "$INSTALL_TRAY" == "true" ]]; then
-    if ! download_binary "agentline-tray"; then
+if [[ -n "$LATEST_TAG" ]]; then
+    if ! download_binary "agentline" "$LATEST_TAG"; then
         NEED_BUILD=true
     fi
+
+    if [[ "$INSTALL_TRAY" == "true" ]]; then
+        if [[ "$OS" == "darwin" ]]; then
+            if ! download_macos_app "$LATEST_TAG"; then
+                NEED_BUILD=true
+            fi
+        else
+            if ! download_binary "agentline-tray" "$LATEST_TAG"; then
+                NEED_BUILD=true
+            fi
+        fi
+    fi
+else
+    NEED_BUILD=true
 fi
 
 # ── fallback: build from source ──────────────────────────────────
@@ -164,7 +191,6 @@ CONFIG_FILE="$CONFIG_DIR/config.toml"
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
     mkdir -p "$CONFIG_DIR"
-    # try to find config.example.toml
     EXAMPLE=""
     if [[ -f "config.example.toml" ]]; then
         EXAMPLE="config.example.toml"
@@ -185,6 +211,10 @@ echo ""
 echo "Installation complete!"
 echo "  Binary: $INSTALL_DIR/agentline"
 if [[ "$INSTALL_TRAY" == "true" ]]; then
-    echo "  Tray:   $INSTALL_DIR/agentline-tray"
+    if [[ "$OS" == "darwin" ]]; then
+        echo "  Tray:   /Applications/AgentlineTray.app"
+    else
+        echo "  Tray:   $INSTALL_DIR/agentline-tray"
+    fi
 fi
 echo "  Config: ${CONFIG_FILE:-$CONFIG_DIR/config.toml}"
