@@ -37,10 +37,11 @@ const data = reactive<AgentsData>({
   platform: '',
   list: [],
   configs: {
-    codex: { model: '', sandbox_mode: 'workspace-write', approval_mode: 'never' },
+    codex: { model: '', sandbox_mode: 'workspace-write', approval_mode: 'never', api_key: '' },
     qoder: { personal_access_token: '' },
     opencode: { base_url: '', api_key: '' },
     kimi: { access_token: '' },
+    gemini: { api_key: '' },
   },
 })
 
@@ -49,6 +50,9 @@ const installing = ref<string | null>(null)
 const loginMethod = reactive<Record<string, string>>({
   qoder: 'token',
   kimi: 'cli',
+  opencode: 'token',
+  codex: 'cli',
+  gemini: 'cli',
 })
 
 const STATUS_ORDER: Record<string, number> = { ready: 0, needs_login: 1, not_installed: 2 }
@@ -223,7 +227,7 @@ async function installAgent(id: string) {
             <div class="login-header">
               <h4 class="step-title" style="margin: 0">{{ $t('agent.login_title') }}</h4>
               <select
-                v-if="selectedAgent === 'qoder' || selectedAgent === 'kimi'"
+                v-if="['qoder', 'kimi', 'opencode', 'codex', 'gemini'].includes(selectedAgent!)"
                 class="login-method-select"
                 v-model="loginMethod[selectedAgent!]"
               >
@@ -234,6 +238,18 @@ async function installAgent(id: string) {
                 <template v-if="selectedAgent === 'kimi'">
                   <option value="cli">{{ $t('agent.interactive_login') }}</option>
                   <option value="token">{{ $t('agent.access_token') }}</option>
+                </template>
+                <template v-if="selectedAgent === 'opencode'">
+                  <option value="token">API Key</option>
+                  <option value="cli">{{ $t('agent.cli_login') }}</option>
+                </template>
+                <template v-if="selectedAgent === 'codex'">
+                  <option value="cli">{{ $t('agent.cli_login') }}</option>
+                  <option value="token">API Key</option>
+                </template>
+                <template v-if="selectedAgent === 'gemini'">
+                  <option value="cli">{{ $t('agent.interactive_login') }}</option>
+                  <option value="token">API Key</option>
                 </template>
               </select>
             </div>
@@ -296,12 +312,95 @@ async function installAgent(id: string) {
               </div>
             </template>
 
+            <!-- OpenCode: API Key -->
+            <template v-else-if="selectedAgent === 'opencode' && loginMethod.opencode === 'token'">
+              <p class="text-muted">{{ $t('agent.opencode_token_hint') }}</p>
+              <div style="width: 100%">
+                <div class="field">
+                  <label class="field-label">base_url</label>
+                  <input type="text" v-model="data.configs.opencode.base_url" class="input-mono" :placeholder="$t('agent.opencode_url_placeholder')" />
+                </div>
+                <div class="field">
+                  <label class="field-label">api_key</label>
+                  <input type="password" v-model="data.configs.opencode.api_key" class="input-mono" :placeholder="$t('agent.opencode_key_placeholder')" />
+                </div>
+                <div class="flex-row-end mt-4">
+                  <button class="btn btn-primary" @click="async () => {
+                    try {
+                      await api.saveAgentConfig({ opencode: data.configs.opencode })
+                      addToast('success', t('agent.opencode_saved'))
+                      const refreshed = await api.getAgents()
+                      Object.assign(data, refreshed)
+                    } catch (e: any) { addToast('error', e.message) }
+                  }">{{ $t('agent.save_continue') }}</button>
+                </div>
+              </div>
+            </template>
+
+            <!-- OpenCode: CLI login -->
+            <template v-else-if="selectedAgent === 'opencode' && loginMethod.opencode === 'cli'">
+              <p class="text-muted">{{ $t('agent.opencode_cli_hint') }}</p>
+              <div class="cli-cmd">opencode providers login</div>
+              <p class="text-muted text-sm">{{ $t('agent.opencode_cli_post') }}</p>
+              <button class="btn btn-ghost" @click="refreshAgents">{{ $t('agent.refresh_status') }}</button>
+            </template>
+
+            <!-- Codex: CLI login -->
+            <template v-else-if="selectedAgent === 'codex' && loginMethod.codex === 'cli'">
+              <p class="text-muted">{{ $t('agent.codex_cli_hint') }}</p>
+              <div class="cli-cmd">codex --login</div>
+              <p class="text-muted text-sm">{{ $t('agent.codex_cli_post') }}</p>
+              <button class="btn btn-ghost" @click="refreshAgents">{{ $t('agent.refresh_status') }}</button>
+            </template>
+
+            <!-- Codex: API Key -->
+            <template v-else-if="selectedAgent === 'codex' && loginMethod.codex === 'token'">
+              <p class="text-muted">{{ $t('agent.codex_token_hint') }}</p>
+              <div style="width: 100%">
+                <div class="field">
+                  <label class="field-label">api_key (OPENAI_API_KEY)</label>
+                  <input type="password" v-model="data.configs.codex.api_key" class="input-mono" :placeholder="$t('agent.codex_key_placeholder')" />
+                </div>
+                <div class="flex-row-end mt-4">
+                  <button class="btn btn-primary" @click="async () => {
+                    try {
+                      await api.saveAgentConfig({ codex: data.configs.codex })
+                      addToast('success', t('agent.codex_saved'))
+                      const refreshed = await api.getAgents()
+                      Object.assign(data, refreshed)
+                    } catch (e: any) { addToast('error', e.message) }
+                  }">{{ $t('agent.save_continue') }}</button>
+                </div>
+              </div>
+            </template>
+
             <!-- Gemini: Google account login -->
-            <template v-else-if="selectedAgent === 'gemini'">
+            <template v-else-if="selectedAgent === 'gemini' && loginMethod.gemini === 'cli'">
               <p class="text-muted">{{ $t('agent.gemini_hint') }}</p>
               <div class="cli-cmd">gemini</div>
               <p class="text-muted text-sm">{{ $t('agent.gemini_post') }}</p>
               <button class="btn btn-ghost" @click="refreshAgents">{{ $t('agent.refresh_status') }}</button>
+            </template>
+
+            <!-- Gemini: API Key -->
+            <template v-else-if="selectedAgent === 'gemini' && loginMethod.gemini === 'token'">
+              <p class="text-muted">{{ $t('agent.gemini_token_hint') }}</p>
+              <div style="width: 100%">
+                <div class="field">
+                  <label class="field-label">api_key (GEMINI_API_KEY)</label>
+                  <input type="password" v-model="data.configs.gemini.api_key" class="input-mono" :placeholder="$t('agent.gemini_key_placeholder')" />
+                </div>
+                <div class="flex-row-end mt-4">
+                  <button class="btn btn-primary" @click="async () => {
+                    try {
+                      await api.saveAgentConfig({ gemini: data.configs.gemini })
+                      addToast('success', t('agent.gemini_saved'))
+                      const refreshed = await api.getAgents()
+                      Object.assign(data, refreshed)
+                    } catch (e: any) { addToast('error', e.message) }
+                  }">{{ $t('agent.save_continue') }}</button>
+                </div>
+              </div>
             </template>
 
             <!-- Hermes: OAuth login -->
@@ -383,24 +482,6 @@ async function installAgent(id: string) {
               </div>
             </div>
 
-            <!-- Qoder settings -->
-            <div v-if="selectedAgent === 'qoder'" class="agent-settings">
-              <hr class="divider" />
-              <h4 class="settings-title">{{ $t('agent.qoder_settings') }}</h4>
-              <div class="field">
-                <label class="field-label">personal_access_token</label>
-                <input type="password" v-model="data.configs.qoder.personal_access_token" class="input-mono" :placeholder="$t('agent.qoder_pat_placeholder')" />
-              </div>
-              <div class="flex-row-end mt-4">
-                <button class="btn btn-sm btn-primary" @click="async () => {
-                  try {
-                    await api.saveAgentConfig({ qoder: data.configs.qoder })
-                    addToast('success', t('agent.qoder_config_saved'))
-                  } catch (e: any) { addToast('error', e.message) }
-                }">{{ $t('agent.save_settings') }}</button>
-              </div>
-            </div>
-
             <!-- OpenCode settings -->
             <div v-if="selectedAgent === 'opencode'" class="agent-settings">
               <hr class="divider" />
@@ -423,23 +504,6 @@ async function installAgent(id: string) {
               </div>
             </div>
 
-            <!-- Kimi settings -->
-            <div v-if="selectedAgent === 'kimi'" class="agent-settings">
-              <hr class="divider" />
-              <h4 class="settings-title">{{ $t('agent.kimi_settings') }}</h4>
-              <div class="field">
-                <label class="field-label">access_token</label>
-                <input type="password" v-model="data.configs.kimi.access_token" class="input-mono" :placeholder="$t('agent.kimi_key_placeholder')" />
-              </div>
-              <div class="flex-row-end mt-4">
-                <button class="btn btn-sm btn-primary" @click="async () => {
-                  try {
-                    await api.saveAgentConfig({ kimi: data.configs.kimi })
-                    addToast('success', t('agent.kimi_saved'))
-                  } catch (e: any) { addToast('error', e.message) }
-                }">{{ $t('agent.save_settings') }}</button>
-              </div>
-            </div>
           </div>
         </div>
       </div>

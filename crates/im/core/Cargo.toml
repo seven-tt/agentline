@@ -1,6 +1,6 @@
 [package]
-name = "agentline-im-telegram"
-description = "Telegram Bot API long-polling adapter for agentline"
+name = "agentline-im-core"
+description = "Shared IM abstraction layer: traits, default renderer, and re-exports for agentline IM adapters"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,13 +13,9 @@ categories.workspace = true
 readme.workspace = true
 
 [dependencies]
-agentline-im-core = { workspace = true }
-
+agentline-bridge = { workspace = true }
 async-trait = { workspace = true }
+dirs = { workspace = true }
 rust-i18n = { workspace = true }
 tokio = { workspace = true }
-reqwest = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 tracing = { workspace = true }
-thiserror = { workspace = true }

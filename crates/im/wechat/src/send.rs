@@ -4,7 +4,7 @@ use crate::types::{
     BaseInfo, GetConfigReq, GetConfigResp, Item, SendMessageReq, SendMessageResp, SendTypingReq,
     StreamSignalItem, WeixinMessage,
 };
-use agentline_bridge::types::PeerRef;
+use agentline_im_core::types::PeerRef;
 
 /// Unique per-message id matching openclaw's format: `{prefix}:{ms}-{hex8}`.
 fn generate_client_id() -> String {
@@ -143,14 +143,15 @@ pub async fn send_stream_signal(
 /// Best-effort typing indicator. Requires a typing_ticket fetched from
 /// /getconfig per (peer, context_token). On failure we log and return Ok —
 /// typing is a courtesy, not a correctness signal.
-pub async fn send_typing(http: &HttpClient, to: &PeerRef) -> Result<()> {
+pub async fn send_typing(http: &HttpClient, to: &PeerRef, status: i32) -> Result<()> {
     let context_token = match extract_context_token(to) {
         Some(c) => c,
         None => return Ok(()),
     };
     let cfg_req = GetConfigReq {
-        to_user_id: to.user_id.clone(),
-        context_token: context_token.clone(),
+        ilink_user_id: to.user_id.clone(),
+        context_token,
+        base_info: BaseInfo::current(),
     };
     let cfg: GetConfigResp = match http.post_json("/ilink/bot/getconfig", &cfg_req).await {
         Ok(c) => c,
@@ -160,12 +161,14 @@ pub async fn send_typing(http: &HttpClient, to: &PeerRef) -> Result<()> {
         }
     };
     let Some(ticket) = cfg.typing_ticket else {
+        tracing::debug!(user=%to.user_id, "getconfig returned no typing_ticket");
         return Ok(());
     };
     let typing_req = SendTypingReq {
-        to_user_id: to.user_id.clone(),
+        ilink_user_id: to.user_id.clone(),
         typing_ticket: ticket,
-        context_token,
+        status,
+        base_info: BaseInfo::current(),
     };
     let _: serde_json::Value = match http.post_json("/ilink/bot/sendtyping", &typing_req).await {
         Ok(v) => v,

@@ -5,7 +5,7 @@
 use crate::auth::{OpenParams, TOPIC_BOT_MESSAGE, open_connection};
 use crate::error::{Error, Result};
 use crate::types::{BotCallback, DataFrame, DataFrameResponse};
-use agentline_bridge::types::{InboundMessage, MessageKind, PeerRef};
+use agentline_im_core::types::{InboundMessage, MessageKind, PeerRef};
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -36,13 +36,22 @@ pub struct StreamConfig {
 pub fn spawn_stream(
     cfg: StreamConfig,
 ) -> (mpsc::Receiver<InboundMessage>, WebhookCache, JoinHandle<()>) {
-    let (tx, rx) = mpsc::channel(cfg.buffer.max(1));
     let webhooks: WebhookCache = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let (rx, handle) = spawn_stream_with(cfg, webhooks.clone());
+    (rx, webhooks, handle)
+}
+
+/// Like [`spawn_stream`] but uses an existing [`WebhookCache`].
+pub fn spawn_stream_with(
+    cfg: StreamConfig,
+    webhooks: WebhookCache,
+) -> (mpsc::Receiver<InboundMessage>, JoinHandle<()>) {
+    let (tx, rx) = mpsc::channel(cfg.buffer.max(1));
     let webhooks_for_task = webhooks.clone();
     let handle = tokio::spawn(async move {
         run_loop(cfg, tx, webhooks_for_task).await;
     });
-    (rx, webhooks, handle)
+    (rx, handle)
 }
 
 async fn run_loop(cfg: StreamConfig, tx: mpsc::Sender<InboundMessage>, webhooks: WebhookCache) {
