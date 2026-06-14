@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "agentline"
-version = "1.2.0"
+version = "1.0.0"
 dependencies = [
  "agentline-agent-acp",
  "agentline-agent-claude-code",
@@ -64,11 +64,13 @@ dependencies = [
  "agentline-agent-opencode",
  "agentline-agent-qoder",
  "agentline-bridge",
+ "agentline-im-core",
  "agentline-im-dingtalk",
  "agentline-im-feishu",
  "agentline-im-telegram",
  "agentline-im-wechat",
  "anyhow",
+ "async-trait",
  "axum",
  "clap",
  "dirs 5.0.1",
@@ -88,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-acp"
-version = "1.2.0"
+version = "1.0.0"
 dependencies = [
  "agent-client-protocol",
  "agentline-bridge",
@@ -108,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-claude-code"
-version = "1.2.0"
+version = "1.0.0"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -125,7 +127,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-codex"
-version = "1.2.0"
+version = "1.0.0"
 dependencies = [
  "agentline-bridge",
  "anyhow",
@@ -143,7 +145,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-gemini"
-version = "1.2.0"
+version = "1.0.0"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -159,7 +161,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-hermes"
-version = "1.2.0"
+version = "1.0.0"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -175,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-kimi"
-version = "1.2.0"
+version = "1.0.0"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -192,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-kiro"
-version = "1.2.0"
+version = "1.0.0"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -208,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-opencode"
-version = "1.2.0"
+version = "1.0.0"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -224,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-qoder"
-version = "1.2.0"
+version = "1.0.0"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -240,13 +242,11 @@ dependencies = [
 
 [[package]]
 name = "agentline-bridge"
-version = "1.2.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
- "dirs 5.0.1",
  "futures",
  "libc",
- "rust-i18n",
  "serde",
  "serde_json",
  "sysinfo",
@@ -258,13 +258,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentline-im-dingtalk"
-version = "1.2.0"
+name = "agentline-im-core"
+version = "1.0.0"
 dependencies = [
  "agentline-bridge",
  "async-trait",
+ "dirs 5.0.1",
+ "rust-i18n",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "agentline-im-dingtalk"
+version = "1.0.0"
+dependencies = [
+ "agentline-im-core",
+ "async-trait",
  "futures",
  "reqwest",
+ "rust-i18n",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -277,11 +290,28 @@ dependencies = [
 
 [[package]]
 name = "agentline-im-feishu"
-version = "1.2.0"
+version = "1.0.0"
 dependencies = [
- "agentline-bridge",
+ "agentline-im-core",
  "async-trait",
- "axum",
+ "futures",
+ "reqwest",
+ "rust-i18n",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "agentline-im-telegram"
+version = "1.0.0"
+dependencies = [
+ "agentline-im-core",
+ "async-trait",
  "reqwest",
  "rust-i18n",
  "serde",
@@ -292,25 +322,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentline-im-telegram"
-version = "1.2.0"
-dependencies = [
- "agentline-bridge",
- "async-trait",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "agentline-im-wechat"
-version = "1.2.0"
+version = "1.0.0"
 dependencies = [
  "aes",
- "agentline-bridge",
+ "agentline-im-core",
  "async-trait",
  "base64",
  "bytes",
@@ -331,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-tray"
-version = "1.2.0"
+version = "1.0.0"
 dependencies = [
  "agentline-bridge",
  "anyhow",
