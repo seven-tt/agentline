@@ -37,7 +37,7 @@ jobs:
             label: win-x64
             ext: .exe
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -161,7 +161,7 @@ jobs:
           iscc //DVersion="${VERSION}" //DBinDir="${BIN_DIR}" scripts/installer.iss
           mv "scripts/agentline-tray-${VERSION}-win-x64-setup.exe" dist/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: agentline-${{ matrix.label }}
           path: dist/*
@@ -177,7 +177,7 @@ jobs:
           - label: mac-x64
           - label: mac-arm64
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: agentline-${{ matrix.label }}
           path: dist
@@ -201,11 +201,10 @@ jobs:
         env:
           SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          for BINARY in dist/*-${{ matrix.label }}; do
-            chmod +x "$BINARY"
-            codesign --force --options runtime --sign "$SIGNING_IDENTITY" --timestamp "$BINARY"
-            codesign --verify --verbose "$BINARY"
-          done
+          BINARY=$(ls dist/agentline-*-${{ matrix.label }})
+          chmod +x "$BINARY"
+          codesign --force --options runtime --sign "$SIGNING_IDENTITY" --timestamp "$BINARY"
+          codesign --verify --verbose "$BINARY"
 
       - name: sign and notarize .app
         env:
@@ -215,12 +214,31 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           DMG=$(ls dist/agentline-tray-*.dmg)
+          DMG_NAME=$(basename "$DMG")
           MOUNT_DIR=$(mktemp -d)
+          WORK_DIR=$(mktemp -d)
+
+          # extract .app from read-only DMG
           hdiutil attach "$DMG" -mountpoint "$MOUNT_DIR" -nobrowse
-          APP_PATH="$MOUNT_DIR/AgentlineTray.app"
-          codesign --deep --force --options runtime --sign "$SIGNING_IDENTITY" --timestamp "$APP_PATH"
-          codesign --verify --verbose "$APP_PATH"
+          cp -R "$MOUNT_DIR/AgentlineTray.app" "$WORK_DIR/"
           hdiutil detach "$MOUNT_DIR"
+
+          # sign both binaries individually, then the .app bundle
+          APP_PATH="$WORK_DIR/AgentlineTray.app"
+          codesign --force --options runtime --sign "$SIGNING_IDENTITY" --timestamp "$APP_PATH/Contents/MacOS/agentline"
+          codesign --force --options runtime --sign "$SIGNING_IDENTITY" --timestamp "$APP_PATH/Contents/MacOS/agentline-tray"
+          codesign --force --options runtime --sign "$SIGNING_IDENTITY" --timestamp "$APP_PATH"
+          codesign --verify --verbose "$APP_PATH"
+
+          # rebuild DMG with signed .app
+          STAGING=$(mktemp -d)
+          mv "$APP_PATH" "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          rm -f "$DMG"
+          hdiutil create -volname "Agentline" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+          rm -rf "$STAGING" "$WORK_DIR"
+
+          # notarize
           xcrun notarytool submit "$DMG" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_PASSWORD" \
@@ -228,7 +246,7 @@ jobs:
             --wait
           xcrun stapler staple "$DMG"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: agentline-${{ matrix.label }}
           path: dist/*
@@ -239,7 +257,7 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: dist
           merge-multiple: true

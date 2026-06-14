@@ -303,7 +303,7 @@ fn spawn_agent(cfg: &AcpBackendConfig) -> Result<tokio::process::Child> {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
+        use tokio::os::windows::process::CommandExt;
         // CREATE_NEW_PROCESS_GROUP (0x200) lets us treat the child's pid as the
         // process-group id and terminate the whole tree on shutdown.
         cmd.creation_flags(0x00000200);
