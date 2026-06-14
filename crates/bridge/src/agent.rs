@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde_json::Value;
 use std::path::Path;
+use std::sync::Arc;
 
 /// A coding agent that can run prompts inside a project working directory.
 ///
@@ -45,4 +46,49 @@ pub trait AgentBackend: Send + Sync + 'static {
     /// Terminate the backend and any child processes it spawned. Called on
     /// graceful shutdown (e.g. Ctrl-C). Default is a no-op.
     async fn shutdown(&self) {}
+}
+
+/// Agent installation / readiness status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentStatus {
+    /// Currently the active agent (has a running session or is the configured default).
+    Ready,
+    /// Binary found on PATH but not the active agent.
+    Installed,
+    /// Binary not found on PATH.
+    NotInstalled,
+}
+
+/// Agent name paired with its installation status.
+#[derive(Debug, Clone)]
+pub struct AgentInfo {
+    pub name: String,
+    pub status: AgentStatus,
+}
+
+/// Factory for building agent backends by name at runtime (used by `/agent`).
+#[async_trait]
+pub trait AgentFactory: Send + Sync + 'static {
+    /// List available agent backend names.
+    fn available(&self) -> Vec<String>;
+
+    /// List agents with installation status. The default implementation marks
+    /// `current_agent` as [`AgentStatus::Ready`] and everything else as
+    /// [`AgentStatus::Installed`].
+    fn available_with_status(&self, current_agent: &str) -> Vec<AgentInfo> {
+        self.available()
+            .into_iter()
+            .map(|name| {
+                let status = if name == current_agent {
+                    AgentStatus::Ready
+                } else {
+                    AgentStatus::Installed
+                };
+                AgentInfo { name, status }
+            })
+            .collect()
+    }
+
+    /// Build an agent backend by name.
+    async fn build(&self, name: &str) -> Result<Arc<dyn AgentBackend>>;
 }

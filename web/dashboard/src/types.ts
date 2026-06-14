@@ -35,6 +35,7 @@ export interface CodexConfig {
   model: string
   sandbox_mode: string
   approval_mode: string
+  api_key: string
 }
 
 export interface QoderConfig {
@@ -50,6 +51,10 @@ export interface KimiConfig {
   access_token: string
 }
 
+export interface GeminiConfig {
+  api_key: string
+}
+
 export interface AgentsData {
   backend: string
   platform: string
@@ -59,6 +64,7 @@ export interface AgentsData {
     qoder: QoderConfig
     opencode: OpencodeConfig
     kimi: KimiConfig
+    gemini: GeminiConfig
   }
 }
 
@@ -68,6 +74,7 @@ export interface AgentConfigIn {
   qoder?: Partial<QoderConfig>
   opencode?: Partial<OpencodeConfig>
   kimi?: Partial<KimiConfig>
+  gemini?: Partial<GeminiConfig>
 }
 
 export interface InstallResult {
@@ -101,9 +108,6 @@ export interface FeishuConfig {
   enable: boolean
   app_id: string
   app_secret: string
-  verification_token: string
-  encrypt_key: string
-  webhook_bind: string
   allowed_users: string[]
 }
 

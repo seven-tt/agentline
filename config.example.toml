@@ -19,9 +19,6 @@ allowed_users = []
 enable = false
 app_id = ""
 app_secret = ""
-verification_token = ""    # Event subscription verification token
-encrypt_key = ""           # Event encryption key (optional, empty = no decryption)
-webhook_bind = "0.0.0.0:9000"  # Feishu callback listener address
 # Whitelist: open_id list. Empty = allow all.
 allowed_users = []
 

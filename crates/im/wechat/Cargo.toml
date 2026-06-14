@@ -13,9 +13,10 @@ categories.workspace = true
 readme.workspace = true
 
 [dependencies]
-agentline-bridge = { workspace = true }
+agentline-im-core = { workspace = true }
 
 async-trait = { workspace = true }
+rust-i18n = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }
@@ -24,7 +25,6 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 
-rust-i18n = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
 aes = "0.8"

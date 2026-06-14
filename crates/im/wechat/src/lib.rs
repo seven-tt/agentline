@@ -3,6 +3,8 @@
 //! Talks to https://ilinkai.weixin.qq.com — Tencent's officially-released
 //! personal-WeChat Bot HTTP API (the iLink protocol).
 
+rust_i18n::i18n!("../core/locales", fallback = "zh-CN");
+
 pub mod auth;
 pub mod error;
 pub mod http;
@@ -23,12 +25,14 @@ pub use http::HttpClient;
 pub use poll::{ContextTokenCache, CursorCell, CursorPersist, NoopPersist, spawn_poller};
 pub use token::TokenRegistry;
 
-use agentline_bridge::ImChannel;
-use agentline_bridge::PermissionDanger;
-use agentline_bridge::types::{ElicitFieldType, Media, MessageEvent, PeerRef};
+use agentline_im_core::PermissionDanger;
+use agentline_im_core::event::OutboundEvent;
+use agentline_im_core::source::{ImAdapter, ImCapabilities, InputSource, InputSourceKind};
+use agentline_im_core::types::{ElicitFieldType, PeerRef};
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 
@@ -45,7 +49,9 @@ const TOKEN_WAIT_POLL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Appended to the message that spends a user's last send slot, prompting them
 /// to top up the budget by sending another message.
-const CONTINUE_HINT: &str = "\n\n—— 本轮消息已达微信单次回复上限，回复「继续」以接收剩余内容 ——";
+fn continue_hint() -> String {
+    rust_i18n::t!("im.wechat_continue_hint").to_string()
+}
 
 /// Queued, token-bucket-paced sender for discrete text messages.
 ///
@@ -54,7 +60,7 @@ const CONTINUE_HINT: &str = "\n\n—— 本轮消息已达微信单次回复上�
 /// every inbound user message grants a budget of [`token::MAX_MSGS_PER_CONTEXT`]
 /// sends on its `context_token`, and iLink rejects anything beyond that with
 /// `ret=-2`. The worker spends tokens oldest-first; when the budget runs out it
-/// appends [`CONTINUE_HINT`] to the final message and **blocks** (messages stay
+/// appends a continue hint to the final message and **blocks** (messages stay
 /// queued) until the user sends again, which tops the bucket back up. A modest
 /// [`MIN_SEND_INTERVAL`] gap is still kept between sends. The worker exits when
 /// all `SendQueue` clones are dropped.
@@ -116,7 +122,7 @@ impl SendQueue {
                     let target = with_context_token(peer.clone(), &token);
                     let done = agent_done.lock().await.contains(&user);
                     let body = if final_slot && !done {
-                        format!("{text}{CONTINUE_HINT}")
+                        format!("{text}{}", continue_hint())
                     } else {
                         text.clone()
                     };
@@ -198,6 +204,8 @@ struct ActiveStream {
     signaled: bool,
     /// Accumulated text when streaming is not available.
     buffered_text: String,
+    /// Accumulated thinking char count for summary on ThinkingEnd.
+    thinking_chars: usize,
 }
 
 /// Buffered tool messages waiting to be merged into a single markdown send.
@@ -223,7 +231,14 @@ const TOOL_BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5
 /// tools while preventing an entire long response from being buffered.
 const BATCH_STREAM_ABSORB_MAX: usize = 1000;
 
-/// `ImChannel` impl for iLink. Construct via `WechatChannel::start` which also
+/// Parameters for deferred start via `InputSource::start()`.
+struct DeferredStart {
+    initial_cursor: String,
+    persist: Arc<dyn CursorPersist>,
+    allowed_users: Vec<String>,
+}
+
+/// iLink adapter. Construct via `WechatChannel::start` which also
 /// kicks off the long-poll loop and returns the inbound mpsc receiver.
 pub struct WechatChannel {
     http: HttpClient,
@@ -243,6 +258,10 @@ pub struct WechatChannel {
     /// "继续" received after the agent is done can be answered instead of silently
     /// swallowed.
     agent_done: Arc<Mutex<HashSet<String>>>,
+    /// Per-user typing indicator loop handles.
+    typing_guards: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    /// Deferred start config (consumed by `InputSource::start()`).
+    deferred_start: Mutex<Option<DeferredStart>>,
 }
 
 impl WechatChannel {
@@ -259,7 +278,7 @@ impl WechatChannel {
         initial_context_tokens: HashMap<String, String>,
     ) -> (
         Self,
-        tokio::sync::mpsc::Receiver<agentline_bridge::types::InboundMessage>,
+        tokio::sync::mpsc::Receiver<agentline_im_core::types::InboundMessage>,
         tokio::task::JoinHandle<()>,
         CursorCell,
     ) {
@@ -334,11 +353,89 @@ impl WechatChannel {
                     flush_handle: None,
                 })),
                 agent_done,
+                typing_guards: Arc::new(Mutex::new(HashMap::new())),
+                deferred_start: Mutex::new(None),
             },
             rx,
             handle,
             cursor,
         )
+    }
+
+    /// Create a WechatChannel that can be started later via `InputSource::start()`.
+    pub fn new(
+        http: HttpClient,
+        initial_cursor: String,
+        persist: Arc<dyn CursorPersist>,
+        allowed_users: Vec<String>,
+        initial_context_tokens: HashMap<String, String>,
+    ) -> Self {
+        let registry = TokenRegistry::new(token::MAX_MSGS_PER_CONTEXT, token::TOKEN_MAX_AGE);
+        registry.seed(initial_context_tokens);
+        let agent_done: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        let send_queue = SendQueue::spawn(
+            http.clone(),
+            MIN_SEND_INTERVAL,
+            registry.clone(),
+            agent_done.clone(),
+        );
+        let active_streams: Arc<Mutex<HashMap<String, ActiveStream>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        // Background GC task: drop spent / aged-out tokens.
+        let gc_registry = registry.clone();
+        tokio::spawn(async move {
+            let mut iv = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                iv.tick().await;
+                gc_registry.gc();
+            }
+        });
+
+        // Background GC task: close idle streams.
+        let gc_streams = active_streams.clone();
+        let gc_http = http.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                let mut streams = gc_streams.lock().await;
+                let now = std::time::Instant::now();
+                let stale: Vec<String> = streams
+                    .iter()
+                    .filter(|(_, s)| now.duration_since(s.last_activity) > STREAM_IDLE_TIMEOUT)
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                for peer_id in stale {
+                    if let Some(mut active) = streams.remove(&peer_id) {
+                        flush_and_end(&gc_http, &mut active).await;
+                        tracing::debug!(peer_id, "closed idle stream");
+                    }
+                }
+            }
+        });
+
+        Self {
+            send_queue,
+            http,
+            active_streams,
+            device_id: format!("agentline-{}", rand::random::<u32>()),
+            registry,
+            tool_batch: Arc::new(Mutex::new(ToolBatch {
+                lines: Vec::new(),
+                progress: HashMap::new(),
+                stream_buf: String::new(),
+                peer: None,
+                flush_handle: None,
+            })),
+            agent_done,
+            typing_guards: Arc::new(Mutex::new(HashMap::new())),
+            deferred_start: Mutex::new(Some(DeferredStart {
+                initial_cursor,
+                persist,
+                allowed_users,
+            })),
+        }
     }
 
     pub fn http(&self) -> &HttpClient {
@@ -382,7 +479,7 @@ impl WechatChannel {
     /// Returns as soon as the message is queued; the [`SendQueue`] worker
     /// performs the actual send no faster than one per [`MIN_SEND_INTERVAL`].
     /// Empty messages are dropped.
-    async fn send_plain(&self, to: &PeerRef, text: &str) -> agentline_bridge::Result<()> {
+    async fn send_plain(&self, to: &PeerRef, text: &str) -> agentline_im_core::Result<()> {
         if text.is_empty() {
             return Ok(());
         }
@@ -415,16 +512,18 @@ impl WechatChannel {
             (std::mem::take(&mut batch.lines), buf, batch.peer.take())
         };
         if let Some(peer) = peer {
+            let mut parts: Vec<String> = Vec::new();
             if !lines.is_empty() {
-                let text = lines.join("\n\n");
+                parts.push(lines.join("\n\n"));
+            }
+            if !stream_buf.is_empty() {
+                parts.push(stream_buf);
+            }
+            if !parts.is_empty() {
+                let text = parts.join("\n\n");
                 if let Err(e) = self.send_plain(&peer, &text).await {
                     tracing::error!(error=%e, "flush_tool_batch send failed");
                 }
-            }
-            if !stream_buf.is_empty()
-                && let Err(e) = self.send_plain(&peer, &stream_buf).await
-            {
-                tracing::error!(error=%e, "flush_tool_batch stream_buf send failed");
             }
         }
     }
@@ -446,6 +545,56 @@ impl WechatChannel {
             self.send_queue.clone(),
             self.registry.clone(),
         );
+    }
+
+    /// Ensure a typing indicator loop is running for the given peer. If one is
+    /// already active this is a no-op.
+    async fn ensure_typing(&self, peer: &PeerRef) {
+        let user_id = peer.user_id.clone();
+        let mut guards = self.typing_guards.lock().await;
+        if let Some(h) = guards.get(&user_id)
+            && !h.is_finished()
+        {
+            return;
+        }
+        let http = self.http.clone();
+        let registry = self.registry.clone();
+        let peer = peer.clone();
+        let interval = self.typing_interval();
+        let handle = tokio::spawn(async move {
+            let mut tick = tokio::time::interval(interval);
+            loop {
+                tick.tick().await;
+                if registry.is_exhausted(&peer.user_id) {
+                    continue;
+                }
+                let enriched = if peer
+                    .opaque
+                    .get("context_token")
+                    .and_then(|v| v.as_str())
+                    .is_some()
+                {
+                    peer.clone()
+                } else if let Some(tok) = registry.latest(&peer.user_id) {
+                    with_context_token(peer.clone(), &tok)
+                } else {
+                    continue;
+                };
+                let _ = send::send_typing(&http, &enriched, 1).await;
+            }
+        });
+        guards.insert(user_id, handle);
+    }
+
+    /// Cancel the typing indicator loop for the given peer and send status=2
+    /// to clear the indicator on the client side.
+    async fn cancel_typing(&self, peer: &PeerRef) {
+        let mut guards = self.typing_guards.lock().await;
+        if let Some(h) = guards.remove(&peer.user_id) {
+            h.abort();
+            let enriched = self.enrich_peer(peer).await;
+            let _ = send::send_typing(&self.http, &enriched, 2).await;
+        }
     }
 
     /// (Re)start the flush timer on the batch. Shared by push_tool_line and
@@ -486,14 +635,16 @@ impl WechatChannel {
                 } else {
                     peer
                 };
+                let mut parts: Vec<String> = Vec::new();
                 if !lines.is_empty() {
-                    let text = lines.join("\n\n");
-                    for chunk in split_plain_message(&text, MAX_PLAIN_BYTES) {
-                        send_queue.enqueue(enriched.clone(), chunk);
-                    }
+                    parts.push(lines.join("\n\n"));
                 }
                 if !stream_buf.is_empty() {
-                    for chunk in split_plain_message(&stream_buf, MAX_PLAIN_BYTES) {
+                    parts.push(stream_buf);
+                }
+                if !parts.is_empty() {
+                    let text = parts.join("\n\n");
+                    for chunk in split_plain_message(&text, MAX_PLAIN_BYTES) {
                         send_queue.enqueue(enriched.clone(), chunk);
                     }
                 }
@@ -518,287 +669,6 @@ async fn flush_and_end(_http: &HttpClient, active: &mut ActiveStream) -> String 
     }
 
     std::mem::take(&mut active.buffered_text)
-}
-
-#[async_trait]
-impl ImChannel for WechatChannel {
-    async fn send_text(&self, to: &PeerRef, text: &str) -> agentline_bridge::Result<()> {
-        self.send_plain(to, text).await
-    }
-
-    async fn typing(&self, to: &PeerRef) -> agentline_bridge::Result<()> {
-        send::send_typing(&self.http, to).await.map_err(Into::into)
-    }
-
-    async fn send_media(&self, _to: &PeerRef, _media: Media) -> agentline_bridge::Result<()> {
-        Err(agentline_bridge::Error::NotSupported)
-    }
-
-    async fn send_event(&self, to: &PeerRef, event: &MessageEvent) -> agentline_bridge::Result<()> {
-        let to = self.enrich_peer(to).await;
-        let to = &to;
-        let peer_id = &to.user_id;
-
-        match event {
-            MessageEvent::StreamChunk { text } => {
-                // When the tool batch is active, absorb short inter-tool text
-                // instead of opening a separate stream bubble.
-                {
-                    let batch = self.tool_batch.lock().await;
-                    if !batch.lines.is_empty()
-                        && batch.stream_buf.len() + text.len() <= BATCH_STREAM_ABSORB_MAX
-                    {
-                        drop(batch);
-                        let batch_ref = self.tool_batch.clone();
-                        let mut batch = self.tool_batch.lock().await;
-                        batch.stream_buf.push_str(text);
-                        Self::reset_batch_timer(
-                            &mut batch,
-                            batch_ref,
-                            self.send_queue.clone(),
-                            self.registry.clone(),
-                        );
-                        return Ok(());
-                    }
-                }
-                self.flush_tool_batch().await;
-                let mut streams = self.active_streams.lock().await;
-                let active = match streams.get_mut(peer_id) {
-                    Some(a) => {
-                        a.last_activity = std::time::Instant::now();
-                        a
-                    }
-                    None => {
-                        let ts = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis())
-                            .unwrap_or(0);
-                        let client_stream_id = format!("{}:{}", self.device_id, ts);
-                        let mut sender = stream::WeixinStreamSender::new(
-                            self.http.clone(),
-                            self.device_id.clone(),
-                            client_stream_id,
-                        );
-                        let sender_opt = match sender.init().await {
-                            Ok(()) => {
-                                tracing::debug!("native_init_stream succeeded");
-                                Some(sender)
-                            }
-                            Err(e) => {
-                                tracing::warn!(error=%e, "native_init_stream failed; falling back to buffered text mode");
-                                None
-                            }
-                        };
-                        streams.insert(
-                            peer_id.clone(),
-                            ActiveStream {
-                                sender: sender_opt,
-                                md_filter: markdown::StreamingMarkdownFilter::new(),
-                                last_activity: std::time::Instant::now(),
-                                signaled: false,
-                                buffered_text: String::new(),
-                            },
-                        );
-                        streams.get_mut(peer_id).unwrap()
-                    }
-                };
-
-                // Streaming mode: send signal + piece.
-                if let Some(ref mut sender) = active.sender {
-                    if !active.signaled
-                        && let Some(ticket) = sender.ticket()
-                    {
-                        if let Err(e) = send::send_stream_signal(
-                            &self.http,
-                            to,
-                            ticket,
-                            sender.client_stream_id(),
-                            "result",
-                        )
-                        .await
-                        {
-                            tracing::error!(error=%e, "send_stream_signal failed");
-                        } else {
-                            active.signaled = true;
-                        }
-                    }
-                    let filtered = active.md_filter.feed(text);
-                    if !filtered.is_empty() {
-                        for chunk in split_utf8_chunks(&filtered, MAX_PIECE_BYTES) {
-                            if let Err(e) = sender
-                                .send_piece(&stream::PiecePayload::Text {
-                                    text: chunk.to_string(),
-                                    stream_type: "result".to_string(),
-                                })
-                                .await
-                            {
-                                tracing::error!(error=%e, "send_piece failed");
-                            }
-                        }
-                    }
-                    return Ok(());
-                }
-
-                // Buffered mode: accumulate filtered text.
-                let filtered = active.md_filter.feed(text);
-                active.buffered_text.push_str(&filtered);
-                Ok(())
-            }
-
-            MessageEvent::StreamEnd => {
-                self.flush_tool_batch().await;
-                if let Some(text) = self.end_stream_for(peer_id).await {
-                    self.send_plain(to, &text).await?;
-                }
-                Ok(())
-            }
-
-            MessageEvent::PlainText(text) => {
-                // If the tool batch is active, absorb short text (thinking
-                // summaries, permission auto-approve) into the batch.
-                {
-                    let batch = self.tool_batch.lock().await;
-                    if !batch.lines.is_empty() {
-                        drop(batch);
-                        self.push_tool_line(to, text.clone()).await;
-                        return Ok(());
-                    }
-                }
-                self.flush_tool_batch().await;
-                if let Some(buffered) = self.end_stream_for(peer_id).await {
-                    self.send_plain(to, &buffered).await?;
-                }
-                self.send_plain(to, text).await
-            }
-
-            MessageEvent::ToolStart { .. } => {
-                // Swallowed: the bridge only sends ToolEnd with a combined label.
-                Ok(())
-            }
-
-            MessageEvent::ToolEnd { id, ok, summary } => {
-                if let Some(buffered) = self.end_stream_for(peer_id).await {
-                    self.send_plain(to, &buffered).await?;
-                }
-                let icon = if *ok { "✅" } else { "❌" };
-                let line = match summary {
-                    Some(s) if !s.is_empty() => format!("{} {}", icon, s),
-                    _ => format!("{} 工具执行{}", icon, if *ok { "完成" } else { "失败" }),
-                };
-                // Discard any stored ToolProgress output — too verbose for IM.
-                self.tool_batch.lock().await.progress.remove(id);
-                self.push_tool_line(to, line).await;
-                Ok(())
-            }
-
-            MessageEvent::PermissionRequest {
-                what, danger, tag, ..
-            } => {
-                self.flush_tool_batch().await;
-                if let Some(buffered) = self.end_stream_for(peer_id).await {
-                    self.send_plain(to, &buffered).await?;
-                }
-                let icon = match danger {
-                    PermissionDanger::Low => "🟢",
-                    PermissionDanger::Medium => "🟡",
-                    PermissionDanger::High => "🔴",
-                };
-                let risk = match danger {
-                    PermissionDanger::Low => "低风险",
-                    PermissionDanger::Medium => "中等风险",
-                    PermissionDanger::High => "高风险",
-                };
-                // Compact two-line format for IM.
-                let text = format!(
-                    "⚠️ {tag} 需授权: {}\n{icon} {risk} · y 单次 / s session级 / n 拒绝",
-                    what
-                );
-                self.send_plain(to, &text).await
-            }
-
-            MessageEvent::Plan { steps } => {
-                self.flush_tool_batch().await;
-                if let Some(buffered) = self.end_stream_for(peer_id).await {
-                    self.send_plain(to, &buffered).await?;
-                }
-                let mut text = String::from("📋 **执行计划**\n\n");
-                for (i, step) in steps.iter().enumerate() {
-                    text.push_str(&format!("**{}.** {}\n", i + 1, step));
-                }
-                self.send_plain(to, text.trim_end()).await
-            }
-
-            MessageEvent::Error(msg) => {
-                self.flush_tool_batch().await;
-                if let Some(buffered) = self.end_stream_for(peer_id).await {
-                    self.send_plain(to, &buffered).await?;
-                }
-                let text = format!(
-                    "❌ **执行出错**\n\n\
-                    {}\n\n\
-                    如需重试，请重新发送请求。",
-                    msg
-                );
-                self.send_plain(to, &text).await
-            }
-
-            MessageEvent::ToolProgress { id, output } => {
-                let mut batch = self.tool_batch.lock().await;
-                batch
-                    .progress
-                    .entry(id.clone())
-                    .or_default()
-                    .push_str(output);
-                batch.peer = Some(to.clone());
-                Ok(())
-            }
-            MessageEvent::ElicitInput { prompt, schema, .. } => {
-                self.flush_tool_batch().await;
-                if let Some(buffered) = self.end_stream_for(peer_id).await {
-                    self.send_plain(to, &buffered).await?;
-                }
-                let mut s = format!("💬 {prompt}");
-                if let Some(fields) = schema {
-                    for field in fields {
-                        match &field.field_type {
-                            ElicitFieldType::SingleSelect { options }
-                            | ElicitFieldType::MultiSelect { options } => {
-                                s.push('\n');
-                                for (i, opt) in options.iter().enumerate() {
-                                    s.push_str(&format!("\n{}. {}", i + 1, opt.label));
-                                    if let Some(desc) = &opt.description {
-                                        s.push_str(&format!("  ({})", desc));
-                                    }
-                                }
-                                let hint = match &field.field_type {
-                                    ElicitFieldType::MultiSelect { .. } => {
-                                        "\n\n回复编号选择，多选用逗号分隔"
-                                    }
-                                    _ => "\n\n回复编号选择，或直接输入",
-                                };
-                                s.push_str(hint);
-                            }
-                            ElicitFieldType::Boolean => {
-                                s.push_str("\n\n回复 y/n");
-                            }
-                            _ => {
-                                s.push_str("\n\n请直接回复");
-                            }
-                        }
-                    }
-                } else {
-                    s.push_str("\n\n请直接回复");
-                }
-                self.send_plain(to, &s).await
-            }
-
-            MessageEvent::Done => {
-                self.flush_tool_batch().await;
-                self.agent_done.lock().await.insert(peer_id.clone());
-                Ok(())
-            }
-        }
-    }
 }
 
 /// Split a long plain message into multiple parts at paragraph boundaries
@@ -852,4 +722,523 @@ fn split_utf8_chunks(text: &str, max_bytes: usize) -> Vec<&str> {
         offset = end;
     }
     result
+}
+
+// ── InputSource + ImAdapter ──────────────────────────────────────────
+
+#[async_trait]
+impl InputSource for WechatChannel {
+    fn id(&self) -> &str {
+        "wechat"
+    }
+
+    fn kind(&self) -> InputSourceKind {
+        InputSourceKind::Im
+    }
+
+    fn parse_message(
+        &self,
+        msg: &agentline_im_core::types::InboundMessage,
+    ) -> agentline_im_core::types::InboundPayload {
+        agentline_im_core::default_parse_message(msg)
+    }
+
+    async fn start(
+        &self,
+    ) -> agentline_im_core::Result<
+        tokio::sync::mpsc::Receiver<agentline_im_core::types::InboundMessage>,
+    > {
+        let ds = self
+            .deferred_start
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| agentline_im_core::Error::other("wechat already started"))?;
+        let cursor: CursorCell = Arc::new(RwLock::new(ds.initial_cursor));
+        let (rx, _handle) = poll::spawn_poller(
+            self.http.clone(),
+            cursor,
+            ds.persist,
+            Arc::new(ds.allowed_users),
+            self.registry.clone(),
+            self.agent_done.clone(),
+            32,
+        );
+        Ok(rx)
+    }
+
+    async fn send_event(
+        &self,
+        to: &PeerRef,
+        event: &OutboundEvent,
+    ) -> agentline_im_core::Result<()> {
+        use agentline_im_core::event::ToolEvent;
+        use rust_i18n::t;
+
+        let to = self.enrich_peer(to).await;
+        let to = &to;
+        let peer_id = &to.user_id;
+
+        match event {
+            OutboundEvent::PermissionRequest { .. }
+            | OutboundEvent::ElicitInput { .. }
+            | OutboundEvent::Done { .. } => {
+                self.cancel_typing(to).await;
+            }
+            OutboundEvent::Thinking { .. }
+            | OutboundEvent::StreamStart { .. }
+            | OutboundEvent::StreamChunk { .. }
+            | OutboundEvent::Tool(_) => {
+                self.ensure_typing(to).await;
+            }
+            _ => {}
+        }
+
+        match event {
+            OutboundEvent::Thinking { text, .. } => {
+                let mut streams = self.active_streams.lock().await;
+                let active = streams
+                    .entry(peer_id.clone())
+                    .or_insert_with(|| ActiveStream {
+                        sender: None,
+                        md_filter: markdown::StreamingMarkdownFilter::new(),
+                        last_activity: std::time::Instant::now(),
+                        signaled: false,
+                        buffered_text: String::new(),
+                        thinking_chars: 0,
+                    });
+                active.thinking_chars += text.chars().count();
+                Ok(())
+            }
+
+            OutboundEvent::ThinkingEnd {
+                tag, elapsed_secs, ..
+            } => {
+                let chars = {
+                    let mut streams = self.active_streams.lock().await;
+                    streams
+                        .get_mut(peer_id)
+                        .map(|a| std::mem::take(&mut a.thinking_chars))
+                        .unwrap_or(0)
+                };
+                if chars > 0 {
+                    let summary = t!(
+                        "bridge.thinking_summary",
+                        tag = tag,
+                        secs = format!("{:.1}", elapsed_secs),
+                        chars = chars
+                    )
+                    .to_string();
+                    self.send_plain(to, &summary).await?;
+                }
+                Ok(())
+            }
+
+            OutboundEvent::StreamStart { tag } => {
+                let header = format!("🤖 {tag} ");
+                let mut streams = self.active_streams.lock().await;
+                let active = streams
+                    .entry(peer_id.clone())
+                    .or_insert_with(|| ActiveStream {
+                        sender: None,
+                        md_filter: markdown::StreamingMarkdownFilter::new(),
+                        last_activity: std::time::Instant::now(),
+                        signaled: false,
+                        buffered_text: String::new(),
+                        thinking_chars: 0,
+                    });
+                if let Some(ref mut sender) = active.sender {
+                    if !active.signaled
+                        && let Some(ticket) = sender.ticket()
+                    {
+                        if let Err(e) = send::send_stream_signal(
+                            &self.http,
+                            to,
+                            ticket,
+                            sender.client_stream_id(),
+                            "result",
+                        )
+                        .await
+                        {
+                            tracing::error!(error=%e, "send_stream_signal failed");
+                        } else {
+                            active.signaled = true;
+                        }
+                    }
+                    let filtered = active.md_filter.feed(&header);
+                    if !filtered.is_empty() {
+                        for chunk in split_utf8_chunks(&filtered, MAX_PIECE_BYTES) {
+                            let _ = sender
+                                .send_piece(&stream::PiecePayload::Text {
+                                    text: chunk.to_string(),
+                                    stream_type: "result".to_string(),
+                                })
+                                .await;
+                        }
+                    }
+                } else {
+                    let filtered = active.md_filter.feed(&header);
+                    active.buffered_text.push_str(&filtered);
+                }
+                Ok(())
+            }
+
+            OutboundEvent::StreamChunk { text } => {
+                {
+                    let batch = self.tool_batch.lock().await;
+                    if !batch.lines.is_empty()
+                        && batch.stream_buf.len() + text.len() <= BATCH_STREAM_ABSORB_MAX
+                    {
+                        drop(batch);
+                        {
+                            let mut streams = self.active_streams.lock().await;
+                            if let Some(active) = streams.get_mut(peer_id)
+                                && !active.buffered_text.is_empty()
+                            {
+                                let header = std::mem::take(&mut active.buffered_text);
+                                let mut batch = self.tool_batch.lock().await;
+                                batch.stream_buf.push_str(&header);
+                            }
+                        }
+                        let batch_ref = self.tool_batch.clone();
+                        let mut batch = self.tool_batch.lock().await;
+                        batch.stream_buf.push_str(text);
+                        Self::reset_batch_timer(
+                            &mut batch,
+                            batch_ref,
+                            self.send_queue.clone(),
+                            self.registry.clone(),
+                        );
+                        return Ok(());
+                    }
+                }
+                self.flush_tool_batch().await;
+                let mut streams = self.active_streams.lock().await;
+                let active = match streams.get_mut(peer_id) {
+                    Some(a) => {
+                        a.last_activity = std::time::Instant::now();
+                        a
+                    }
+                    None => {
+                        let ts = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis())
+                            .unwrap_or(0);
+                        let client_stream_id = format!("{}:{}", self.device_id, ts);
+                        let mut sender = stream::WeixinStreamSender::new(
+                            self.http.clone(),
+                            self.device_id.clone(),
+                            client_stream_id,
+                        );
+                        let sender_opt = match sender.init().await {
+                            Ok(()) => Some(sender),
+                            Err(e) => {
+                                tracing::warn!(error=%e, "native_init_stream failed; falling back to buffered text mode");
+                                None
+                            }
+                        };
+                        streams.insert(
+                            peer_id.clone(),
+                            ActiveStream {
+                                sender: sender_opt,
+                                md_filter: markdown::StreamingMarkdownFilter::new(),
+                                last_activity: std::time::Instant::now(),
+                                signaled: false,
+                                buffered_text: String::new(),
+                                thinking_chars: 0,
+                            },
+                        );
+                        streams.get_mut(peer_id).unwrap()
+                    }
+                };
+
+                if let Some(ref mut sender) = active.sender {
+                    if !active.signaled
+                        && let Some(ticket) = sender.ticket()
+                    {
+                        if let Err(e) = send::send_stream_signal(
+                            &self.http,
+                            to,
+                            ticket,
+                            sender.client_stream_id(),
+                            "result",
+                        )
+                        .await
+                        {
+                            tracing::error!(error=%e, "send_stream_signal failed");
+                        } else {
+                            active.signaled = true;
+                        }
+                    }
+                    let filtered = active.md_filter.feed(text);
+                    if !filtered.is_empty() {
+                        for chunk in split_utf8_chunks(&filtered, MAX_PIECE_BYTES) {
+                            if let Err(e) = sender
+                                .send_piece(&stream::PiecePayload::Text {
+                                    text: chunk.to_string(),
+                                    stream_type: "result".to_string(),
+                                })
+                                .await
+                            {
+                                tracing::error!(error=%e, "send_piece failed");
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
+
+                let filtered = active.md_filter.feed(text);
+                active.buffered_text.push_str(&filtered);
+                Ok(())
+            }
+
+            OutboundEvent::StreamEnd => {
+                self.flush_tool_batch().await;
+                if let Some(text) = self.end_stream_for(peer_id).await {
+                    self.send_plain(to, &text).await?;
+                }
+                Ok(())
+            }
+
+            OutboundEvent::Text { content, .. } => {
+                {
+                    let batch = self.tool_batch.lock().await;
+                    if !batch.lines.is_empty() {
+                        drop(batch);
+                        self.push_tool_line(to, content.clone()).await;
+                        return Ok(());
+                    }
+                }
+                self.flush_tool_batch().await;
+                if let Some(buffered) = self.end_stream_for(peer_id).await {
+                    self.send_plain(to, &buffered).await?;
+                }
+                self.send_plain(to, content).await
+            }
+
+            OutboundEvent::Media(_) => Err(agentline_im_core::Error::NotSupported),
+
+            OutboundEvent::Tool(ToolEvent::Start { .. }) => Ok(()),
+
+            OutboundEvent::Tool(ToolEvent::End {
+                id,
+                ok,
+                summary,
+                label,
+                ..
+            }) => {
+                if let Some(buffered) = self.end_stream_for(peer_id).await {
+                    self.send_plain(to, &buffered).await?;
+                }
+                let icon = if *ok { "✅" } else { "❌" };
+                let line = match summary {
+                    Some(s) if !s.is_empty() => format!("{} {}", icon, s),
+                    _ => {
+                        let status = if *ok {
+                            t!("im.tool_done")
+                        } else {
+                            t!("im.tool_failed")
+                        };
+                        if label.is_empty() {
+                            format!("{icon} {status}")
+                        } else {
+                            format!("{icon} {label}: {status}")
+                        }
+                    }
+                };
+                self.tool_batch.lock().await.progress.remove(id);
+                self.push_tool_line(to, line).await;
+                Ok(())
+            }
+
+            OutboundEvent::Tool(ToolEvent::Progress { id, output }) => {
+                let mut batch = self.tool_batch.lock().await;
+                batch
+                    .progress
+                    .entry(id.clone())
+                    .or_default()
+                    .push_str(output);
+                batch.peer = Some(to.clone());
+                Ok(())
+            }
+
+            OutboundEvent::PermissionRequest {
+                what,
+                danger,
+                tool_kind,
+                ..
+            } => {
+                self.flush_tool_batch().await;
+                if let Some(buffered) = self.end_stream_for(peer_id).await {
+                    self.send_plain(to, &buffered).await?;
+                }
+                let icon = match danger {
+                    PermissionDanger::Low => "🟢",
+                    PermissionDanger::Medium => "🟡",
+                    PermissionDanger::High => "🔴",
+                };
+                let risk = match danger {
+                    PermissionDanger::Low => t!("im.risk_low"),
+                    PermissionDanger::Medium => t!("im.risk_medium"),
+                    PermissionDanger::High => t!("im.risk_high"),
+                };
+                let kind_name = tool_kind.name();
+                let text = t!(
+                    "im.perm_request_full",
+                    kind = kind_name,
+                    what = what,
+                    icon = icon,
+                    risk = risk
+                )
+                .to_string();
+                self.send_plain(to, &text).await
+            }
+
+            OutboundEvent::ElicitInput { prompt, schema, .. } => {
+                self.flush_tool_batch().await;
+                if let Some(buffered) = self.end_stream_for(peer_id).await {
+                    self.send_plain(to, &buffered).await?;
+                }
+                let mut s = format!("💬 {prompt}");
+                if let Some(fields) = schema {
+                    for field in fields {
+                        match &field.field_type {
+                            ElicitFieldType::SingleSelect { options }
+                            | ElicitFieldType::MultiSelect { options } => {
+                                s.push('\n');
+                                for (i, opt) in options.iter().enumerate() {
+                                    s.push_str(&format!("\n{}. {}", i + 1, opt.label));
+                                    if let Some(desc) = &opt.description {
+                                        s.push_str(&format!("  ({})", desc));
+                                    }
+                                }
+                                let hint = match &field.field_type {
+                                    ElicitFieldType::MultiSelect { .. } => {
+                                        t!("im.elicit_multi_hint")
+                                    }
+                                    _ => t!("im.elicit_select_hint"),
+                                };
+                                s.push_str(&hint);
+                            }
+                            ElicitFieldType::Boolean => {
+                                s.push_str(&t!("im.elicit_bool_hint"));
+                            }
+                            _ => {
+                                s.push_str(&t!("im.elicit_free_hint"));
+                            }
+                        }
+                    }
+                } else {
+                    s.push_str(&t!("im.elicit_free_hint"));
+                }
+                self.send_plain(to, &s).await
+            }
+
+            OutboundEvent::Plan { steps } => {
+                self.flush_tool_batch().await;
+                if let Some(buffered) = self.end_stream_for(peer_id).await {
+                    self.send_plain(to, &buffered).await?;
+                }
+                let title = t!("im.plan_title");
+                let mut text = format!("{title}\n\n");
+                for (i, step) in steps.iter().enumerate() {
+                    text.push_str(&format!("**{}.** {}\n", i + 1, step));
+                }
+                self.send_plain(to, text.trim_end()).await
+            }
+
+            OutboundEvent::SessionList { info } => match info {
+                None => self.send_plain(to, &t!("bridge.session_list_empty")).await,
+                Some(s) => {
+                    let perm = if s.is_yolo {
+                        t!("bridge.yolo_label")
+                    } else {
+                        t!("bridge.safe_label")
+                    };
+                    let text = format!(
+                        "## 📋 {title}\n\n\
+                         ### `#{id}` · {agent}\n\
+                         | {f} | {v} |\n\
+                         | :--- | :--- |\n\
+                         | {sid_l} | `{sid}` |\n\
+                         | {type_l} | {agent} |\n\
+                         | {cwd_l} | `{cwd}` |\n\
+                         | {start_l} | {started} |\n\
+                         | {idle_l} | {idle} |\n\
+                         | {perm_l} | {perm} |\n\
+                         | {grant_l} | {grants} |",
+                        title = t!("bridge.session_title", count = 1),
+                        id = s.short_id,
+                        agent = s.agent_name,
+                        f = t!("bridge.session_header_field"),
+                        v = t!("bridge.session_header_value"),
+                        sid_l = t!("bridge.session_id_label"),
+                        sid = s.session_id,
+                        type_l = t!("bridge.session_type_label"),
+                        cwd_l = t!("bridge.session_cwd_label"),
+                        cwd = s.cwd.display(),
+                        start_l = t!("bridge.session_started_label"),
+                        started = agentline_im_core::format::fmt_local(s.created_at),
+                        idle_l = t!("bridge.session_idle_label"),
+                        idle = agentline_im_core::format::fmt_ago(s.idle_duration),
+                        perm_l = t!("bridge.session_perm_label"),
+                        perm = perm,
+                        grant_l = t!("bridge.session_grants_label"),
+                        grants = s.grant_summary,
+                    );
+                    self.send_plain(to, &text).await
+                }
+            },
+
+            OutboundEvent::ModeChanged { .. } | OutboundEvent::SessionTitle { .. } => {
+                agentline_im_core::render_outbound_event(self, to, event).await
+            }
+
+            OutboundEvent::Done { silent } => {
+                self.flush_tool_batch().await;
+                self.agent_done.lock().await.insert(peer_id.clone());
+                if *silent {
+                    self.send_plain(to, &t!("im.stream_done")).await?;
+                }
+                Ok(())
+            }
+
+            OutboundEvent::Error(msg) => {
+                self.flush_tool_batch().await;
+                if let Some(buffered) = self.end_stream_for(peer_id).await {
+                    self.send_plain(to, &buffered).await?;
+                }
+                let text = t!("im.error_prefix", msg = msg).to_string();
+                self.send_plain(to, &text).await
+            }
+        }
+    }
+
+    async fn shutdown(&self) -> agentline_im_core::Result<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ImAdapter for WechatChannel {
+    async fn send_text(&self, to: &PeerRef, text: &str) -> agentline_im_core::Result<()> {
+        self.send_plain(to, text).await
+    }
+
+    async fn typing(&self, to: &PeerRef) -> agentline_im_core::Result<()> {
+        if self.registry.is_exhausted(&to.user_id) {
+            return Ok(());
+        }
+        send::send_typing(&self.http, to, 1)
+            .await
+            .map_err(Into::into)
+    }
+
+    fn typing_interval(&self) -> Duration {
+        Duration::from_secs(4)
+    }
+
+    fn capabilities(&self) -> ImCapabilities {
+        ImCapabilities::default()
+    }
 }
