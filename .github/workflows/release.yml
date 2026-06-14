@@ -214,12 +214,31 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           DMG=$(ls dist/agentline-tray-*.dmg)
+          DMG_NAME=$(basename "$DMG")
           MOUNT_DIR=$(mktemp -d)
+          WORK_DIR=$(mktemp -d)
+
+          # extract .app from read-only DMG
           hdiutil attach "$DMG" -mountpoint "$MOUNT_DIR" -nobrowse
-          APP_PATH="$MOUNT_DIR/AgentlineTray.app"
-          codesign --deep --force --options runtime --sign "$SIGNING_IDENTITY" --timestamp "$APP_PATH"
-          codesign --verify --verbose "$APP_PATH"
+          cp -R "$MOUNT_DIR/AgentlineTray.app" "$WORK_DIR/"
           hdiutil detach "$MOUNT_DIR"
+
+          # sign both binaries individually, then the .app bundle
+          APP_PATH="$WORK_DIR/AgentlineTray.app"
+          codesign --force --options runtime --sign "$SIGNING_IDENTITY" --timestamp "$APP_PATH/Contents/MacOS/agentline"
+          codesign --force --options runtime --sign "$SIGNING_IDENTITY" --timestamp "$APP_PATH/Contents/MacOS/agentline-tray"
+          codesign --force --options runtime --sign "$SIGNING_IDENTITY" --timestamp "$APP_PATH"
+          codesign --verify --verbose "$APP_PATH"
+
+          # rebuild DMG with signed .app
+          STAGING=$(mktemp -d)
+          mv "$APP_PATH" "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          rm -f "$DMG"
+          hdiutil create -volname "Agentline" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+          rm -rf "$STAGING" "$WORK_DIR"
+
+          # notarize
           xcrun notarytool submit "$DMG" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_PASSWORD" \
