@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/bridge",
     "crates/cli",
+    "crates/im/core",
     "crates/im/wechat",
     "crates/im/dingtalk",
     "crates/im/feishu",
@@ -20,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.2.0"
+version = "1.0.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/seven-tt/agentline"
@@ -99,6 +100,7 @@ sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 
 # internal
 agentline-bridge = { path = "crates/bridge" }
+agentline-im-core = { path = "crates/im/core" }
 agentline-im-wechat = { path = "crates/im/wechat" }
 agentline-im-dingtalk = { path = "crates/im/dingtalk" }
 agentline-im-feishu = { path = "crates/im/feishu" }
