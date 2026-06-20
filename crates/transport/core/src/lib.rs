@@ -14,6 +14,7 @@
 
 pub mod auth;
 pub mod files;
+#[cfg(unix)]
 mod unix;
 
 use std::path::PathBuf;
@@ -24,6 +25,7 @@ use agentline_bridge::Bridge;
 use agentline_bridge::acp_server::{AcpSource, serve_acp};
 use async_trait::async_trait;
 
+#[cfg(unix)]
 pub use unix::UnixSocketListener;
 
 // ── Protocol + connection ──────────────────────────────────────────────
