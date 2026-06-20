@@ -448,6 +448,7 @@ fn start_transports(cfg: &AppConfig, bridge: &Bridge) -> Result<Vec<std::thread:
     };
     let cwd = bridge.config().default_cwd.clone();
 
+    #[cfg(unix)]
     if !cfg.transport.unix_socket.is_empty() {
         let path = crate::config::expand_tilde(&cfg.transport.unix_socket);
         let listener = agentline_transport::UnixSocketListener::bind(&path)

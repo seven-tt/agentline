@@ -5,3 +5,4 @@ Cargo.lock.user
 dist/
 node_modules/
 .githooks/
+crates/cli/templates/dashboard.html
