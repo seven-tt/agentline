@@ -40,6 +40,7 @@ jobs:
           cd web/dashboard
           npm ci
           npm run build
+          mkdir -p ../../crates/cli/templates
           cp dist/index.html ../../crates/cli/templates/dashboard.html
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -68,6 +69,7 @@ jobs:
           cd web/dashboard
           npm ci
           npm run build
+          mkdir -p ../../crates/cli/templates
           cp dist/index.html ../../crates/cli/templates/dashboard.html
       - uses: dtolnay/rust-toolchain@stable
       - name: install system deps (Linux)
