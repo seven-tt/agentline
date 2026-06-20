@@ -41,6 +41,18 @@ jobs:
             ext: .exe
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/dashboard/package-lock.json
+      - name: build dashboard
+        run: |
+          cd web/dashboard
+          npm ci
+          npm run build
+          mkdir -p ../../crates/cli/templates
+          cp dist/index.html ../../crates/cli/templates/dashboard.html
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
