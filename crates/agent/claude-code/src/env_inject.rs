@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use crate::error::{Error, Result};
+use agentline_bridge::{Error, Result};
 
 pub fn settings_json_path() -> Option<PathBuf> {
     let home = dirs::home_dir()?;

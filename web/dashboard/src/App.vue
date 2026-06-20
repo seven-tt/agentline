@@ -57,6 +57,29 @@ async function doRestart() {
   }
 }
 
+// ─── Update check ───────────────────────────────────────────
+const updateAvailable = ref(false)
+const latestVersion = ref('')
+const updating = ref(false)
+
+onMounted(async () => {
+  try {
+    const res = await api.checkSystemUpdate()
+    if (res.has_update) {
+      updateAvailable.value = true
+      latestVersion.value = res.latest
+    }
+  } catch { /* ignore */ }
+})
+
+async function doUpdate() {
+  if (updating.value) return
+  updating.value = true
+  try {
+    await api.triggerSystemUpdate()
+  } catch { /* ignore */ }
+}
+
 const navItems: { id: ViewName; labelKey: string; descKey: string; icon: string }[] = [
   { id: 'overview', labelKey: 'nav.overview', descKey: 'nav.overview_desc',
     icon: '<path d="M0 1.75A.75.75 0 01.75 1h4.5a.75.75 0 01.75.75v4.5a.75.75 0 01-.75.75H.75A.75.75 0 010 6.25v-4.5zm7 0A.75.75 0 017.75 1h4.5a.75.75 0 01.75.75v4.5a.75.75 0 01-.75.75h-4.5A.75.75 0 017 6.25v-4.5zM0 9.75A.75.75 0 01.75 9h4.5a.75.75 0 01.75.75v4.5a.75.75 0 01-.75.75H.75A.75.75 0 010 14.25v-4.5zm7 0A.75.75 0 017.75 9h4.5a.75.75 0 01.75.75v4.5a.75.75 0 01-.75.75h-4.5a.75.75 0 01-.75-.75v-4.5z"/>' },
@@ -110,6 +133,13 @@ const currentComponent = computed(() => viewComponents[view.value])
           :class="overview.ims.some(im => im.healthy) ? 'online' : 'offline'"
         ></span>
         <span>{{ overview.version ? `v${overview.version}` : '...' }}</span>
+        <span
+          v-if="updateAvailable && !updating"
+          class="update-badge"
+          :title="$t('update.click_update')"
+          @click="doUpdate"
+        >{{ $t('update.available', { version: latestVersion }) }}</span>
+        <span v-if="updating" class="update-badge updating">{{ $t('update.updating') }}</span>
       </div>
     </aside>
 
@@ -304,6 +334,23 @@ body {
   gap: 8px;
   font-size: 12px;
   color: var(--text-tertiary);
+  flex-wrap: wrap;
+}
+.update-badge {
+  background: #e53935;
+  color: #fff;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.update-badge:hover {
+  background: #c62828;
+}
+.update-badge.updating {
+  background: #555;
+  cursor: default;
 }
 .status-dot {
   width: 8px;

@@ -1,0 +1,22 @@
+[package]
+name = "agentline-transport-iroh"
+description = "iroh P2P transport for agentline ACP connections"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[dependencies]
+agentline-bridge = { path = "../../bridge" }
+agentline-transport = { path = "../core" }
+iroh = "1"
+hex = "0.4"
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

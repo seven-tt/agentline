@@ -1,3 +1,4 @@
+use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -108,6 +109,34 @@ impl Tr {
             Locale::En => "Status: ✕ not running",
         }
     }
+
+    fn check_update(&self) -> &str {
+        match self.locale {
+            Locale::ZhCN => "检查更新",
+            Locale::En => "Check for updates",
+        }
+    }
+
+    fn check_update_new(&self) -> &str {
+        match self.locale {
+            Locale::ZhCN => "检查更新  🆕",
+            Locale::En => "Check for updates  🆕",
+        }
+    }
+
+    fn downloading(&self, pct: u8) -> String {
+        match self.locale {
+            Locale::ZhCN => format!("下载中 {pct}%"),
+            Locale::En => format!("Downloading {pct}%"),
+        }
+    }
+
+    fn installing(&self) -> &str {
+        match self.locale {
+            Locale::ZhCN => "安装中...",
+            Locale::En => "Installing...",
+        }
+    }
 }
 
 // ─── tray app ───────────────────────────────────────────────────
@@ -138,6 +167,7 @@ fn run_tray() -> Result<()> {
     let status_item = MenuItem::new(tr.status_checking(), false, None);
     let dashboard = MenuItem::new(tr.open_dashboard(), true, None);
     let restart = MenuItem::new(tr.restart_daemon(), true, None);
+    let update_item = MenuItem::new(tr.check_update(), true, None);
     let sep1 = PredefinedMenuItem::separator();
     let sep2 = PredefinedMenuItem::separator();
     let sep3 = PredefinedMenuItem::separator();
@@ -149,6 +179,7 @@ fn run_tray() -> Result<()> {
         &sep2,
         &restart,
         &sep3,
+        &update_item,
         &quit,
     ])?;
 
@@ -174,12 +205,27 @@ fn run_tray() -> Result<()> {
         }
     });
 
+    // Update checker: sends UpdateMsg to the event loop
+    let (update_tx, update_rx) = std::sync::mpsc::channel::<UpdateMsg>();
+    let update_tx_bg = update_tx.clone();
+    std::thread::spawn(move || {
+        loop {
+            if let Some(info) = check_github_release() {
+                let _ = update_tx_bg.send(UpdateMsg::Available(info));
+            }
+            std::thread::sleep(Duration::from_secs(30 * 60));
+        }
+    });
+
     let dashboard_id = dashboard.id().clone();
     let restart_id = restart.id().clone();
+    let update_id = update_item.id().clone();
     let quit_id = quit.id().clone();
 
     let child_event = Arc::clone(&child);
     let auto_restart_event = Arc::clone(&auto_restart);
+    let mut pending_release: Option<ReleaseInfo> = None;
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::WaitUntil(
             std::time::Instant::now() + Duration::from_millis(POLL_INTERVAL_MS / 2),
@@ -188,6 +234,28 @@ fn run_tray() -> Result<()> {
         if matches!(event, Event::NewEvents(_) | Event::MainEventsCleared) {
             while let Ok((state, pid)) = state_rx.try_recv() {
                 status_item.set_text(state.label(&tr, pid));
+            }
+            while let Ok(msg) = update_rx.try_recv() {
+                match msg {
+                    UpdateMsg::Available(info) => {
+                        update_item.set_text(tr.check_update_new());
+                        pending_release = Some(info);
+                    }
+                    UpdateMsg::Progress(pct) => {
+                        update_item.set_text(tr.downloading(pct));
+                        update_item.set_enabled(false);
+                    }
+                    UpdateMsg::Installing => {
+                        update_item.set_text(tr.installing());
+                    }
+                    UpdateMsg::Done => {
+                        do_self_replace_and_restart(&child_event, &auto_restart_event);
+                    }
+                    UpdateMsg::Failed => {
+                        update_item.set_text(tr.check_update());
+                        update_item.set_enabled(true);
+                    }
+                }
             }
             while let Ok(ev) = menu_rx.try_recv() {
                 if ev.id == quit_id {
@@ -202,6 +270,11 @@ fn run_tray() -> Result<()> {
                     }
                 } else if ev.id == dashboard_id {
                     open_url("http://127.0.0.1:7681");
+                } else if ev.id == update_id
+                    && let Some(info) = pending_release.clone()
+                {
+                    let tx = update_tx.clone();
+                    std::thread::spawn(move || download_and_install(info, tx));
                 }
             }
             while let Ok(_e) = tray_rx.try_recv() {}
@@ -562,4 +635,250 @@ fn make_icon() -> tray_icon::Icon {
     );
 
     tray_icon::Icon::from_rgba(pixmap.take(), SIZE, SIZE).expect("build icon")
+}
+
+// ─── auto update ────────────────────────────────────────────────
+
+const GITHUB_RELEASES_API: &str = "https://api.github.com/repos/seven-tt/agentline/releases/latest";
+const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[derive(Clone)]
+struct ReleaseInfo {
+    tag: String,
+    asset_url: String,
+}
+
+enum UpdateMsg {
+    Available(ReleaseInfo),
+    Progress(u8),
+    Installing,
+    Done,
+    Failed,
+}
+
+fn apply_proxy_from_config() {
+    let path = home().join(".agentline/config.toml");
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut in_proxy = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_proxy = trimmed == "[proxy]";
+            continue;
+        }
+        if !in_proxy {
+            continue;
+        }
+        if let Some((key, val)) = trimmed.split_once('=') {
+            let key = key.trim();
+            let val = val.trim().trim_matches('"');
+            if val.is_empty() {
+                continue;
+            }
+            // Safety: called from a single background thread before any concurrent access.
+            unsafe {
+                match key {
+                    "http" => {
+                        std::env::set_var("http_proxy", val);
+                        std::env::set_var("HTTP_PROXY", val);
+                    }
+                    "https" => {
+                        std::env::set_var("https_proxy", val);
+                        std::env::set_var("HTTPS_PROXY", val);
+                    }
+                    "no_proxy" => {
+                        std::env::set_var("no_proxy", val);
+                        std::env::set_var("NO_PROXY", val);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+fn check_github_release() -> Option<ReleaseInfo> {
+    apply_proxy_from_config();
+
+    let body: String = ureq::get(GITHUB_RELEASES_API)
+        .header("User-Agent", "agentline-tray")
+        .header("Accept", "application/vnd.github+json")
+        .call()
+        .ok()?
+        .body_mut()
+        .read_to_string()
+        .ok()?;
+
+    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let tag = json.get("tag_name")?.as_str()?;
+
+    if !is_newer(tag, CURRENT_VERSION) {
+        return None;
+    }
+
+    let target = if cfg!(target_arch = "aarch64") {
+        "aarch64-apple-darwin"
+    } else {
+        "x86_64-apple-darwin"
+    };
+
+    let assets = json.get("assets")?.as_array()?;
+    let asset_url = assets.iter().find_map(|a| {
+        let name = a.get("name")?.as_str()?;
+        if name.contains(target) && name.ends_with(".zip") {
+            a.get("browser_download_url")?
+                .as_str()
+                .map(|s| s.to_string())
+        } else {
+            None
+        }
+    })?;
+
+    Some(ReleaseInfo {
+        tag: tag.to_string(),
+        asset_url,
+    })
+}
+
+fn is_newer(remote_tag: &str, local: &str) -> bool {
+    let parse = |v: &str| -> Vec<u64> {
+        v.trim_start_matches('v')
+            .split('.')
+            .filter_map(|s| s.parse().ok())
+            .collect()
+    };
+    let r = parse(remote_tag);
+    let l = parse(local);
+    for i in 0..3 {
+        let rv = r.get(i).copied().unwrap_or(0);
+        let lv = l.get(i).copied().unwrap_or(0);
+        if rv > lv {
+            return true;
+        }
+        if rv < lv {
+            return false;
+        }
+    }
+    false
+}
+
+fn download_and_install(info: ReleaseInfo, tx: std::sync::mpsc::Sender<UpdateMsg>) {
+    tracing::info!(tag=%info.tag, "starting update download");
+    if let Err(e) = do_download_and_install(&info, &tx) {
+        tracing::warn!(error=%e, "update failed");
+        let _ = tx.send(UpdateMsg::Failed);
+    }
+}
+
+fn do_download_and_install(
+    info: &ReleaseInfo,
+    tx: &std::sync::mpsc::Sender<UpdateMsg>,
+) -> Result<()> {
+    let tmp_zip = std::path::Path::new("/tmp/agentline-update.zip");
+    let tmp_dir = std::path::Path::new("/tmp/agentline-update");
+
+    // Clean previous attempts
+    let _ = std::fs::remove_file(tmp_zip);
+    let _ = std::fs::remove_dir_all(tmp_dir);
+
+    // Download with progress
+    let mut resp = ureq::get(&info.asset_url)
+        .header("User-Agent", "agentline-tray")
+        .call()
+        .context("download request")?;
+
+    let content_len = resp
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    let mut file = std::fs::File::create(tmp_zip).context("create tmp zip")?;
+    let mut downloaded: u64 = 0;
+    let mut last_pct: u8 = 0;
+    let mut buf = [0u8; 65536];
+    let body = resp.body_mut();
+    loop {
+        let n = body.as_reader().read(&mut buf).context("read body")?;
+        if n == 0 {
+            break;
+        }
+        std::io::Write::write_all(&mut file, &buf[..n])?;
+        downloaded += n as u64;
+        if content_len > 0 {
+            let pct = (downloaded * 100 / content_len).min(100) as u8;
+            if pct != last_pct {
+                last_pct = pct;
+                let _ = tx.send(UpdateMsg::Progress(pct));
+            }
+        }
+    }
+    drop(file);
+
+    let _ = tx.send(UpdateMsg::Installing);
+
+    // Unzip
+    std::fs::create_dir_all(tmp_dir)?;
+    let status = Command::new("unzip")
+        .args([
+            "-o",
+            tmp_zip.to_str().unwrap(),
+            "-d",
+            tmp_dir.to_str().unwrap(),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .context("unzip")?;
+    if !status.success() {
+        bail!("unzip failed");
+    }
+
+    // Find the .app in extracted dir
+    let extracted_app = tmp_dir.join("AgentlineTray.app");
+    if !extracted_app.exists() {
+        bail!("AgentlineTray.app not found in zip");
+    }
+
+    // Determine current .app location
+    let current_exe = std::env::current_exe().context("current_exe")?;
+    // .app/Contents/MacOS/agentline-tray → go up 3 levels
+    let current_app = current_exe
+        .parent() // MacOS/
+        .and_then(|p| p.parent()) // Contents/
+        .and_then(|p| p.parent()) // .app/
+        .context("cannot determine .app path")?;
+
+    let app_parent = current_app.parent().context("no parent of .app")?;
+    let app_name = current_app
+        .file_name()
+        .context("no .app filename")?
+        .to_owned();
+
+    // Replace: move old aside, move new in, remove old
+    let backup = app_parent.join("AgentlineTray.app.bak");
+    let _ = std::fs::remove_dir_all(&backup);
+    std::fs::rename(current_app, &backup).context("move old .app to backup")?;
+    if let Err(e) = std::fs::rename(&extracted_app, app_parent.join(&app_name)) {
+        // Restore backup on failure
+        let _ = std::fs::rename(&backup, current_app);
+        return Err(e).context("move new .app into place");
+    }
+    let _ = std::fs::remove_dir_all(&backup);
+    let _ = std::fs::remove_file(tmp_zip);
+    let _ = std::fs::remove_dir_all(tmp_dir);
+
+    let _ = tx.send(UpdateMsg::Done);
+    Ok(())
+}
+
+fn do_self_replace_and_restart(child_handle: &ChildHandle, auto_restart: &Arc<AtomicBool>) {
+    auto_restart.store(false, Ordering::Relaxed);
+    kill_daemon(child_handle);
+
+    let exe = std::env::current_exe().unwrap_or_default();
+    // The new binary is now at the same path (replaced .app)
+    let _ = Command::new(&exe).spawn();
+    std::process::exit(0);
 }

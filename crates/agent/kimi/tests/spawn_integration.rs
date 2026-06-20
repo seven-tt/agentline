@@ -18,6 +18,7 @@ fn kimi_available() -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "drives the real `kimi acp` agent; needs `kimi login` (device-code) + network"]
 async fn spawn_and_new_session() {
     if !kimi_available() {
         eprintln!("skipping: `kimi` not found on PATH");

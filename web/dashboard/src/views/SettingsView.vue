@@ -14,6 +14,7 @@ const settings = reactive<SettingsConfig>({
   bridge: { default_cwd: '', session_idle_timeout_secs: 7200, locale: 'zh-CN' },
   web: { bind: '127.0.0.1:7681' },
   proxy: { http: '', https: '', no_proxy: '' },
+  shell_proxy: { http: '', https: '', no_proxy: '' },
   log: { level: 'info' },
 })
 
@@ -31,9 +32,11 @@ async function fetchSettings() {
     Object.assign(settings.bridge, data.bridge)
     Object.assign(settings.web, data.web)
     Object.assign(settings.proxy, data.proxy)
+    Object.assign(settings.shell_proxy, data.shell_proxy)
     Object.assign(settings.log, data.log)
     savedSnapshot = settingsSnapshot()
-    restartSnapshot = JSON.stringify({ bridge: settings.bridge, web: settings.web, log: settings.log })
+    // log.level excluded: it now hot-reloads on save, no restart needed.
+    restartSnapshot = JSON.stringify({ bridge: settings.bridge, web: settings.web })
   } catch { /* ignore */ }
 }
 
@@ -45,7 +48,7 @@ watch(settings, () => {
   saveTimer = setTimeout(async () => {
     try {
       await api.saveSettings(settings)
-      const restartCurrent = JSON.stringify({ bridge: settings.bridge, web: settings.web, log: settings.log })
+      const restartCurrent = JSON.stringify({ bridge: settings.bridge, web: settings.web })
       if (restartCurrent !== restartSnapshot) {
         markDirty()
       }
@@ -133,8 +136,11 @@ onMounted(fetchSettings)
             type="text"
             v-model="settings.proxy.http"
             class="input-mono"
-            placeholder="http://proxy.example.com:8080"
+            :placeholder="settings.shell_proxy.http || 'http://proxy.example.com:8080'"
           />
+          <p v-if="settings.shell_proxy.http" class="field-hint">
+            {{ $t('settings.proxy_shell_hint', { value: settings.shell_proxy.http }) }}
+          </p>
         </div>
         <div class="field">
           <label class="field-label">{{ $t('settings.https_proxy') }}</label>
@@ -142,8 +148,11 @@ onMounted(fetchSettings)
             type="text"
             v-model="settings.proxy.https"
             class="input-mono"
-            :placeholder="$t('settings.https_proxy_placeholder')"
+            :placeholder="settings.shell_proxy.https || settings.shell_proxy.http || $t('settings.https_proxy_placeholder')"
           />
+          <p v-if="settings.shell_proxy.https || settings.shell_proxy.http" class="field-hint">
+            {{ $t('settings.proxy_shell_hint', { value: settings.shell_proxy.https || settings.shell_proxy.http }) }}
+          </p>
         </div>
       </div>
       <div class="field">
@@ -155,6 +164,9 @@ onMounted(fetchSettings)
           placeholder="myhost.internal,.corp.example.com"
         />
         <p class="field-hint">{{ $t('settings.no_proxy_hint') }}</p>
+        <p v-if="settings.shell_proxy.no_proxy" class="field-hint">
+          {{ $t('settings.no_proxy_shell_hint', { value: settings.shell_proxy.no_proxy }) }}
+        </p>
       </div>
     </div>
   </div>

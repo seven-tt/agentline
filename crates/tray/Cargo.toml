@@ -26,6 +26,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dirs = { workspace = true }
 agentline-bridge = { workspace = true }
+ureq = "3"
+serde_json = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

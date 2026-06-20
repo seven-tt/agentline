@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-mod agents;
 mod config;
 mod login;
 mod run;
@@ -23,7 +22,11 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Cmd {
     /// Run the bridge in the foreground (default if no subcommand given).
-    Run,
+    Run {
+        /// Start as an ACP server on stdio instead of connecting to IM adapters.
+        #[arg(long)]
+        acp: bool,
+    },
     /// Run the IM-side login flow (e.g. iLink QR-code scan) and persist the token.
     Login,
     /// Manage the background service (macOS launchd today).
@@ -49,8 +52,22 @@ enum ServiceAction {
     },
 }
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // Must run before any other thread exists: tokio's multi-thread runtime
+    // spawns worker threads immediately on build, after which `time` refuses
+    // to trust the OS local offset (soundness guard) and every `LocalTime`
+    // timestamp silently renders as UTC instead of erroring. Capture the
+    // offset here, in the still-single-threaded entry point, and thread it
+    // through explicitly instead of relying on a later now_local() call.
+    let utc_offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to start tokio runtime")?
+        .block_on(async_main(utc_offset))
+}
+
+async fn async_main(utc_offset: time::UtcOffset) -> Result<()> {
     let cli = Cli::parse();
     let config_path = cli
         .config
@@ -59,14 +76,14 @@ async fn main() -> Result<()> {
 
     // `service` subcommands don't need a parsed config; handle them before load.
     if let Some(Cmd::Service { action }) = &cli.command {
-        init_tracing("info");
+        init_tracing("info", utc_offset);
         return run_service(action, cli.config.as_deref()).await;
     }
 
     let (mut cfg, created) = config::AppConfig::load_or_init(&config_path)
         .with_context(|| format!("could not load config from {}", config_path.display()))?;
     cfg.config_path = Some(config_path.clone());
-    init_tracing(&cfg.log.level);
+    let log_handle = init_tracing(&cfg.log.level, utc_offset);
     if created {
         eprintln!(
             "✨ created default config at {}\n   edit it to set IM/agent credentials, then re-run.",
@@ -74,12 +91,32 @@ async fn main() -> Result<()> {
         );
     }
 
-    match cli.command.unwrap_or(Cmd::Run) {
-        Cmd::Run => run::run(cfg).await?,
+    match cli.command.unwrap_or(Cmd::Run { acp: false }) {
+        Cmd::Run { acp } => run::run(cfg, acp, log_handle).await?,
         Cmd::Login => login::run(cfg).await?,
         Cmd::Service { .. } => unreachable!("handled above"),
     }
     Ok(())
+}
+
+/// Lets `[log] level` changes from the settings UI take effect immediately —
+/// without it, a process-lifetime-static `EnvFilter` means the user has to
+/// restart the whole daemon just to turn on debug logging.
+#[derive(Clone)]
+pub struct LogReloadHandle(
+    tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, tracing_subscriber::Registry>,
+);
+
+impl LogReloadHandle {
+    /// Swap the active filter to `level`. A no-op if an explicit `RUST_LOG`
+    /// env var is set — that override is meant to win for the whole process
+    /// lifetime, same as it does at startup.
+    pub fn set_level(&self, level: &str) {
+        if std::env::var("RUST_LOG").is_ok() {
+            return;
+        }
+        let _ = self.0.reload(build_filter(level));
+    }
 }
 
 async fn run_service(action: &ServiceAction, config: Option<&std::path::Path>) -> Result<()> {
@@ -102,24 +139,19 @@ const MAX_LOG_FIELD_CHARS: usize = 240;
 /// - Levels are colorized (ERROR red, WARN yellow, INFO green, …).
 /// - Every field value is collapsed to a single line and truncated with `…`
 ///   so one event never spills across the terminal (e.g. a file-read result).
-fn init_tracing(level: &str) {
+fn init_tracing(level: &str, utc_offset: time::UtcOffset) -> LogReloadHandle {
     use tracing_subscriber::prelude::*;
 
-    let level = match level.to_ascii_lowercase().as_str() {
-        l @ ("error" | "warn" | "info" | "debug" | "trace") => l.to_string(),
-        _ => "info".to_string(),
-    };
+    let filter = build_filter(level);
     let make_timer = || {
-        tracing_subscriber::fmt::time::LocalTime::new(time::macros::format_description!(
-            "[year]-[month]-[day]T[hour]:[minute]:[second][offset_hour sign:mandatory][offset_minute]"
-        ))
+        tracing_subscriber::fmt::time::OffsetTime::new(
+            utc_offset,
+            time::macros::format_description!(
+                "[year]-[month]-[day]T[hour]:[minute]:[second][offset_hour sign:mandatory][offset_minute]"
+            ),
+        )
     };
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        tracing_subscriber::EnvFilter::new(format!(
-            "{level},hyper=warn,hyper_util=warn,reqwest=warn,h2=warn,rustls=warn,\
-             tower=warn,mio=warn,tungstenite=warn,tokio_tungstenite=warn"
-        ))
-    });
+    let (filter, reload_handle) = tracing_subscriber::reload::Layer::new(filter);
     let use_ansi = std::io::IsTerminal::is_terminal(&std::io::stderr());
 
     // In foreground mode, tee logs to ~/.agentline/agentline.log so the
@@ -152,17 +184,36 @@ fn init_tracing(level: &str) {
                 .with(stderr_layer)
                 .with(file_layer)
                 .init();
-            return;
+            return LogReloadHandle(reload_handle);
         }
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
+    let stderr_layer = tracing_subscriber::fmt::layer()
         .with_timer(make_timer())
         .with_ansi(use_ansi)
         .fmt_fields(TruncatingFields)
-        .with_writer(std::io::stderr)
+        .with_writer(std::io::stderr);
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(stderr_layer)
         .init();
+    LogReloadHandle(reload_handle)
+}
+
+/// `level` plus noisy transitive deps (hyper/reqwest/rustls/…) pinned to
+/// `warn` so even `debug` stays readable. An explicit `RUST_LOG` env var
+/// overrides this entirely, both at startup and on every later reload.
+fn build_filter(level: &str) -> tracing_subscriber::EnvFilter {
+    let level = match level.to_ascii_lowercase().as_str() {
+        l @ ("error" | "warn" | "info" | "debug" | "trace") => l.to_string(),
+        _ => "info".to_string(),
+    };
+    tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new(format!(
+            "{level},hyper=warn,hyper_util=warn,reqwest=warn,h2=warn,rustls=warn,\
+             tower=warn,mio=warn,tungstenite=warn,tokio_tungstenite=warn"
+        ))
+    })
 }
 
 /// Field formatter that keeps every event on a single line: interior newlines

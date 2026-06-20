@@ -51,7 +51,7 @@ bridge:
   session_grants_label: "✅ session 级授权"
 
 im:
-  thinking_short: "💭 思考了 %{secs} 秒"
+  thinking_short: "思考了 %{secs} 秒"
   tool_done: "完成"
   tool_failed: "失败"
   tool_exec_done: "%{icon} 工具执行完成"
@@ -71,6 +71,9 @@ im:
   perm_btn_approve_once: "✅ 单次批准"
   perm_btn_approve_session: "📌 Session 级批准"
   perm_btn_deny: "❌ 拒绝"
+  perm_resolved_once: "✅ 已批准（单次）"
+  perm_resolved_session: "✅ 已批准（本会话）"
+  perm_resolved_deny: "❌ 已拒绝"
   error_prefix: "❌ 出错: %{msg}"
   stream_done: "✅ 已结束"
   stream_processing: "⏳ 处理中..."

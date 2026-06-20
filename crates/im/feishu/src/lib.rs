@@ -12,16 +12,19 @@ rust_i18n::i18n!("../core/locales", fallback = "zh-CN");
 
 pub mod auth;
 pub mod error;
+pub mod media;
 pub mod send;
 pub mod types;
 pub mod ws;
 
 pub use error::{Error, Result};
 
-use agentline_im_core::PermissionDanger;
 use agentline_im_core::event::OutboundEvent;
 use agentline_im_core::source::{ImAdapter, ImCapabilities, InputSource, InputSourceKind};
-use agentline_im_core::types::{ElicitFieldType, PeerRef};
+use agentline_im_core::types::{
+    AgentUpdate, ElicitationPropertySchema, PeerRef, multi_select_options, single_select_options,
+};
+use agentline_im_core::{AgentEvent, PermissionDanger, RenderState, synthesize};
 use async_trait::async_trait;
 use auth::TokenManager;
 use std::collections::HashMap;
@@ -52,6 +55,13 @@ pub struct FeishuChannel {
     http: reqwest::Client,
     token_mgr: TokenManager,
     active_cards: Arc<Mutex<HashMap<String, ActiveCard>>>,
+    /// Per-session render synthesis state, keyed by session id.
+    render_states: Arc<Mutex<HashMap<String, RenderState>>>,
+    /// Permission cards awaiting a button click, keyed by the card's own
+    /// message_id. Shared with the ws layer (`ws::WsConfig::perm_cards`),
+    /// which consumes an entry on first click and ignores any repeat click
+    /// on the same card.
+    perm_cards: Arc<Mutex<HashMap<String, types::PermCardEntry>>>,
     cfg: Mutex<Option<FeishuConfig>>,
 }
 
@@ -60,7 +70,7 @@ impl FeishuChannel {
         cfg: FeishuConfig,
     ) -> Result<(
         Self,
-        tokio::sync::mpsc::Receiver<agentline_im_core::types::InboundMessage>,
+        tokio::sync::mpsc::Receiver<agentline_im_core::types::SourceMessage>,
         tokio::task::JoinHandle<()>,
     )> {
         let token_mgr = TokenManager::new(cfg.app_id.clone(), cfg.app_secret.clone()).await?;
@@ -70,11 +80,14 @@ impl FeishuChannel {
             .build()
             .map_err(|e| Error::http(format!("build http: {e}")))?;
 
+        let perm_cards = Arc::new(Mutex::new(HashMap::new()));
         let ws_cfg = ws::WsConfig {
             app_id: cfg.app_id,
             app_secret: cfg.app_secret,
             allowed_users: cfg.allowed_users,
             buffer: 32,
+            token_mgr: token_mgr.clone(),
+            perm_cards: perm_cards.clone(),
         };
 
         let (rx, ws_handle) = ws::spawn_ws_stream(ws_cfg);
@@ -84,6 +97,8 @@ impl FeishuChannel {
                 http,
                 token_mgr,
                 active_cards: Arc::new(Mutex::new(HashMap::new())),
+                render_states: Arc::new(Mutex::new(HashMap::new())),
+                perm_cards,
                 cfg: Mutex::new(None),
             },
             rx,
@@ -102,6 +117,8 @@ impl FeishuChannel {
             http,
             token_mgr,
             active_cards: Arc::new(Mutex::new(HashMap::new())),
+            render_states: Arc::new(Mutex::new(HashMap::new())),
+            perm_cards: Arc::new(Mutex::new(HashMap::new())),
             cfg: Mutex::new(Some(cfg)),
         })
     }
@@ -156,17 +173,10 @@ impl InputSource for FeishuChannel {
         InputSourceKind::Im
     }
 
-    fn parse_message(
-        &self,
-        msg: &agentline_im_core::types::InboundMessage,
-    ) -> agentline_im_core::types::InboundPayload {
-        agentline_im_core::default_parse_message(msg)
-    }
-
     async fn start(
         &self,
     ) -> agentline_im_core::Result<
-        tokio::sync::mpsc::Receiver<agentline_im_core::types::InboundMessage>,
+        tokio::sync::mpsc::Receiver<agentline_im_core::types::SourceMessage>,
     > {
         let cfg = self
             .cfg
@@ -179,12 +189,37 @@ impl InputSource for FeishuChannel {
             app_secret: cfg.app_secret,
             allowed_users: cfg.allowed_users,
             buffer: 32,
+            token_mgr: self.token_mgr.clone(),
+            perm_cards: self.perm_cards.clone(),
         };
         let (rx, _handle) = ws::spawn_ws_stream(ws_cfg);
         Ok(rx)
     }
 
-    async fn send_event(
+    async fn send_update(&self, to: &PeerRef, event: &AgentEvent) -> agentline_im_core::Result<()> {
+        let sid = event.session_id.to_string();
+        let actions = {
+            let mut states = self.render_states.lock().await;
+            let st = states.entry(sid.clone()).or_default();
+            synthesize(st, event.update.clone(), &event.tag)
+        };
+        let is_done = matches!(event.update, AgentUpdate::Done);
+        for action in &actions {
+            self.render_action(to, action).await?;
+        }
+        if is_done {
+            self.render_states.lock().await.remove(&sid);
+        }
+        Ok(())
+    }
+
+    async fn shutdown(&self) -> agentline_im_core::Result<()> {
+        Ok(())
+    }
+}
+
+impl FeishuChannel {
+    async fn render_action(
         &self,
         to: &PeerRef,
         event: &OutboundEvent,
@@ -420,6 +455,12 @@ impl InputSource for FeishuChannel {
                 } else {
                     kind.name().to_string()
                 };
+                let status = if *ok {
+                    t!("im.tool_done")
+                } else {
+                    t!("im.tool_failed")
+                };
+                let title = format!("{icon} {status}");
                 let body = match summary {
                     Some(s) if !s.is_empty() => {
                         let cleaned = s
@@ -430,18 +471,12 @@ impl InputSource for FeishuChannel {
                                     .or_else(|| rest.strip_suffix("```"))
                             })
                             .unwrap_or(s);
-                        cleaned.to_string()
+                        format!("**{kind_label}**\n{cleaned}")
                     }
                     _ => {
-                        let status = if *ok {
-                            t!("im.tool_done")
-                        } else {
-                            t!("im.tool_failed")
-                        };
-                        status.to_string()
+                        format!("`{kind_label}`")
                     }
                 };
-                let title = format!("{icon} {kind_label}");
                 let template = if *ok { "green" } else { "red" };
                 self.send_rich(to, &title, &body, template).await
             }
@@ -465,42 +500,57 @@ impl InputSource for FeishuChannel {
                 };
                 let kind_name = tool_kind.name();
                 let card_json = types::build_permission_card(kind_name, what, icon, &risk);
-                send::send_card(&self.http, &self.token_mgr, peer_id, &card_json)
-                    .await
-                    .map(|_| ())
-                    .map_err(Into::into)
+                let message_id =
+                    send::send_card(&self.http, &self.token_mgr, peer_id, &card_json).await?;
+                if !message_id.is_empty() {
+                    tracing::debug!(message_id=%message_id, "feishu: stored perm card for update");
+                    self.perm_cards.lock().await.insert(
+                        message_id,
+                        types::PermCardEntry {
+                            kind: kind_name.to_string(),
+                            what: what.clone(),
+                            risk_icon: icon,
+                            risk: risk.to_string(),
+                        },
+                    );
+                }
+                Ok(())
             }
 
             OutboundEvent::ElicitInput { prompt, schema, .. } => {
                 self.finalize_card(peer_id).await;
                 let mut text = format!("💬 {prompt}");
-                if let Some(fields) = schema {
-                    for field in fields {
-                        match &field.field_type {
-                            ElicitFieldType::SingleSelect { options }
-                            | ElicitFieldType::MultiSelect { options } => {
-                                text.push('\n');
-                                for (i, opt) in options.iter().enumerate() {
-                                    text.push_str(&format!("\n{}. {}", i + 1, opt.label));
-                                    if let Some(desc) = &opt.description {
-                                        text.push_str(&format!("  ({})", desc));
+                if let Some(schema) = schema {
+                    if let Some((_, prop)) = schema.properties.iter().next() {
+                        match prop {
+                            ElicitationPropertySchema::String(sp) => {
+                                if let Some(options) = single_select_options(sp) {
+                                    text.push('\n');
+                                    for (i, (_, label)) in options.iter().enumerate() {
+                                        text.push_str(&format!("\n{}. {}", i + 1, label));
                                     }
+                                    text.push_str(&t!("im.elicit_select_hint"));
+                                } else {
+                                    text.push_str(&t!("im.elicit_free_hint"));
                                 }
-                                let hint = match &field.field_type {
-                                    ElicitFieldType::MultiSelect { .. } => {
-                                        t!("im.elicit_multi_hint")
-                                    }
-                                    _ => t!("im.elicit_select_hint"),
-                                };
-                                text.push_str(&hint);
                             }
-                            ElicitFieldType::Boolean => {
+                            ElicitationPropertySchema::Array(ms) => {
+                                let options = multi_select_options(&ms.items);
+                                text.push('\n');
+                                for (i, (_, label)) in options.iter().enumerate() {
+                                    text.push_str(&format!("\n{}. {}", i + 1, label));
+                                }
+                                text.push_str(&t!("im.elicit_multi_hint"));
+                            }
+                            ElicitationPropertySchema::Boolean(_) => {
                                 text.push_str(&t!("im.elicit_bool_hint"));
                             }
                             _ => {
                                 text.push_str(&t!("im.elicit_free_hint"));
                             }
                         }
+                    } else {
+                        text.push_str(&t!("im.elicit_free_hint"));
                     }
                 } else {
                     text.push_str(&t!("im.elicit_free_hint"));
@@ -516,44 +566,6 @@ impl InputSource for FeishuChannel {
                 }
                 let title = t!("im.plan_title").to_string();
                 self.send_rich(to, &title, text.trim_end(), "purple").await
-            }
-
-            OutboundEvent::SessionList { info } => {
-                self.finalize_card(peer_id).await;
-                match info {
-                    None => self.send_plain(to, &t!("bridge.session_list_empty")).await,
-                    Some(s) => {
-                        let perm = if s.is_yolo {
-                            t!("bridge.yolo_label")
-                        } else {
-                            t!("bridge.safe_label")
-                        };
-                        let content = format!(
-                            "**🆔 Session ID**  `{sid}`\n\
-                             **🤖 {type_l}**  {agent}\n\
-                             **📁 {cwd_l}**  `{cwd}`\n\
-                             **🕐 {start_l}**  {started}\n\
-                             **⏱️ {idle_l}**  {idle}\n\
-                             **🔐 {perm_l}**  {perm}\n\
-                             **✅ {grant_l}**  {grants}",
-                            sid = s.session_id,
-                            type_l = t!("bridge.session_type_label"),
-                            agent = s.agent_name,
-                            cwd_l = t!("bridge.session_cwd_label"),
-                            cwd = s.cwd.display(),
-                            start_l = t!("bridge.session_started_label"),
-                            started = agentline_im_core::format::fmt_local(s.created_at),
-                            idle_l = t!("bridge.session_idle_label"),
-                            idle = agentline_im_core::format::fmt_ago(s.idle_duration),
-                            perm_l = t!("bridge.session_perm_label"),
-                            perm = perm,
-                            grant_l = t!("bridge.session_grants_label"),
-                            grants = s.grant_summary,
-                        );
-                        let title = format!("📋 #{} · {}", s.short_id, s.agent_name);
-                        self.send_rich(to, &title, &content, "indigo").await
-                    }
-                }
             }
 
             OutboundEvent::ModeChanged { .. } | OutboundEvent::SessionTitle { .. } => {
@@ -584,10 +596,6 @@ impl InputSource for FeishuChannel {
             }
         }
     }
-
-    async fn shutdown(&self) -> agentline_im_core::Result<()> {
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -598,6 +606,68 @@ impl ImAdapter for FeishuChannel {
 
     async fn send_markdown(&self, to: &PeerRef, text: &str) -> agentline_im_core::Result<()> {
         self.send_rich(to, "🤖 Agentline", text, "indigo").await
+    }
+
+    /// Native fields-grid card instead of a markdown-table conversion —
+    /// Feishu cards support a proper 2-column key/value layout directly.
+    async fn send_session_info(
+        &self,
+        to: &PeerRef,
+        info: Option<&agentline_im_core::types::SessionInfo>,
+        fallback_markdown: &str,
+    ) -> agentline_im_core::Result<()> {
+        use rust_i18n::t;
+        if info.is_none() {
+            return self.send_plain(to, &t!("bridge.session_list_empty")).await;
+        };
+        let title = "📋 会话信息";
+        let card = types::build_raw_md_card(title, fallback_markdown, "indigo");
+        send::send_card(&self.http, &self.token_mgr, &to.user_id, &card)
+            .await
+            .map(|_| ())
+            .map_err(Into::into)
+    }
+
+    /// Native fields-grid card for `/agent` — one row per status group.
+    async fn send_agent_list(
+        &self,
+        to: &PeerRef,
+        current: &str,
+        agents: &[agentline_im_core::types::AgentInfo],
+        _fallback_markdown: &str,
+    ) -> agentline_im_core::Result<()> {
+        use agentline_im_core::types::AgentStatus;
+        use rust_i18n::t;
+        let group = |status: AgentStatus, label: std::borrow::Cow<'_, str>| {
+            let names: Vec<&str> = agents
+                .iter()
+                .filter(|a| a.status == status)
+                .map(|a| a.name.as_str())
+                .collect();
+            if names.is_empty() {
+                None
+            } else {
+                Some((label.to_string(), names.join("\n")))
+            }
+        };
+        let mut rows = vec![(
+            t!("bridge.agent_list_current").to_string(),
+            current.to_string(),
+        )];
+        rows.extend(group(AgentStatus::Ready, t!("bridge.agent_list_ready")));
+        rows.extend(group(
+            AgentStatus::Installed,
+            t!("bridge.agent_list_installed"),
+        ));
+        rows.extend(group(
+            AgentStatus::NotInstalled,
+            t!("bridge.agent_list_not_installed"),
+        ));
+        let card = types::build_fields_card("🤖 Agents", "indigo", &rows);
+        send::send_card(&self.http, &self.token_mgr, &to.user_id, &card)
+            .await
+            .map(|_| ())
+            .map_err(Into::into)
     }
 
     fn typing_interval(&self) -> Duration {

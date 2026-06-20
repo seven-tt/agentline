@@ -15,8 +15,9 @@
 //!    hermes setup --portal
 //!    ```
 
-pub mod error;
-pub use error::{Error, Result};
+pub mod config;
+pub mod plugin;
+pub use plugin::plugin;
 
 pub use agentline_agent_acp::AcpBackend;
 
@@ -45,7 +46,7 @@ impl HermesConfig {
 }
 
 /// Spawn a Hermes agent (`hermes acp`) and return a ready-to-use `AcpBackend`.
-pub async fn spawn(cfg: HermesConfig) -> Result<AcpBackend> {
+pub async fn spawn(cfg: HermesConfig) -> agentline_bridge::Result<AcpBackend> {
     let command = cfg.command.unwrap_or_else(|| "hermes".to_string());
     let args = cfg.args.unwrap_or_else(|| vec!["acp".to_string()]);
 
@@ -55,6 +56,7 @@ pub async fn spawn(cfg: HermesConfig) -> Result<AcpBackend> {
         extra_env: cfg.extra_env,
         remove_env: cfg.remove_env,
         pid_file: cfg.pid_file,
+        ..Default::default()
     };
-    Ok(AcpBackend::spawn(acp_cfg).await?)
+    AcpBackend::spawn(acp_cfg).await
 }

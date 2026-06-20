@@ -1,9 +1,10 @@
+use crate::event::{OutboundEvent, TextFormat, ToolEvent};
+use agent_client_protocol::ElicitationPropertySchema;
 use agentline_bridge::Result;
-use agentline_bridge::event::{OutboundEvent, TextFormat, ToolEvent};
-use agentline_bridge::format::{fmt_ago, fmt_local, truncate};
+use agentline_bridge::format::truncate;
 use agentline_bridge::permission::PermissionDanger;
 use agentline_bridge::source::ImAdapter;
-use agentline_bridge::types::{ElicitFieldType, PeerRef};
+use agentline_bridge::types::{PeerRef, multi_select_options, single_select_options};
 use rust_i18n::t;
 
 /// Default outbound renderer for IM adapters. Degrades every `OutboundEvent`
@@ -91,68 +92,16 @@ pub async fn render_outbound_event(
         }
         OutboundEvent::ElicitInput { prompt, schema, .. } => {
             let mut s = format!("💬 {prompt}");
-            if let Some(fields) = schema {
-                for field in fields {
-                    match &field.field_type {
-                        ElicitFieldType::SingleSelect { options }
-                        | ElicitFieldType::MultiSelect { options } => {
-                            s.push('\n');
-                            for (i, opt) in options.iter().enumerate() {
-                                s.push_str(&format!("\n{}. {}", i + 1, opt.label));
-                                if let Some(desc) = &opt.description {
-                                    s.push_str(&format!("  ({})", desc));
-                                }
-                            }
-                            let hint = match &field.field_type {
-                                ElicitFieldType::MultiSelect { .. } => {
-                                    t!("im.elicit_multi_hint")
-                                }
-                                _ => t!("im.elicit_select_hint"),
-                            };
-                            s.push_str(&hint);
-                        }
-                        ElicitFieldType::Boolean => {
-                            s.push_str(&t!("im.elicit_bool_hint"));
-                        }
-                        _ => {
-                            s.push_str(&t!("im.elicit_free_hint"));
-                        }
-                    }
+            if let Some(schema) = schema {
+                if let Some((_, prop)) = schema.properties.iter().next() {
+                    render_elicit_property(&mut s, prop);
+                } else {
+                    s.push_str(&t!("im.elicit_free_hint"));
                 }
             } else {
                 s.push_str(&t!("im.elicit_free_hint"));
             }
             im.send_text(to, &s).await
-        }
-        OutboundEvent::SessionList { info } => {
-            let text = match info {
-                None => t!("bridge.session_list_empty").to_string(),
-                Some(s) => {
-                    let perm = if s.is_yolo {
-                        t!("bridge.yolo_label")
-                    } else {
-                        t!("bridge.safe_label")
-                    };
-                    format!(
-                        "📋 #{id} · {agent}\n\
-                         🆔 {sid}\n\
-                         📁 {cwd}\n\
-                         🕐 {started}\n\
-                         ⏱️ {idle}\n\
-                         🔐 {perm}\n\
-                         ✅ {grants}",
-                        id = s.short_id,
-                        agent = s.agent_name,
-                        sid = s.session_id,
-                        cwd = s.cwd.display(),
-                        started = fmt_local(s.created_at),
-                        idle = fmt_ago(s.idle_duration),
-                        perm = perm,
-                        grants = s.grant_summary,
-                    )
-                }
-            };
-            im.send_text(to, &text).await
         }
         OutboundEvent::Done { silent } => {
             if *silent {
@@ -163,6 +112,36 @@ pub async fn render_outbound_event(
         OutboundEvent::Error(msg) => {
             let text = t!("im.error_prefix", msg = truncate(msg, 1500)).to_string();
             im.send_text(to, &text).await
+        }
+    }
+}
+
+fn render_elicit_property(s: &mut String, prop: &ElicitationPropertySchema) {
+    match prop {
+        ElicitationPropertySchema::String(sp) => {
+            if let Some(options) = single_select_options(sp) {
+                s.push('\n');
+                for (i, (_, label)) in options.iter().enumerate() {
+                    s.push_str(&format!("\n{}. {}", i + 1, label));
+                }
+                s.push_str(&t!("im.elicit_select_hint"));
+            } else {
+                s.push_str(&t!("im.elicit_free_hint"));
+            }
+        }
+        ElicitationPropertySchema::Array(ms) => {
+            let options = multi_select_options(&ms.items);
+            s.push('\n');
+            for (i, (_, label)) in options.iter().enumerate() {
+                s.push_str(&format!("\n{}. {}", i + 1, label));
+            }
+            s.push_str(&t!("im.elicit_multi_hint"));
+        }
+        ElicitationPropertySchema::Boolean(_) => {
+            s.push_str(&t!("im.elicit_bool_hint"));
+        }
+        _ => {
+            s.push_str(&t!("im.elicit_free_hint"));
         }
     }
 }

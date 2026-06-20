@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Embedded copy of the repo's `config.example.toml`. Materialized to
@@ -20,6 +20,8 @@ pub struct AppConfig {
     pub proxy: ProxySection,
     #[serde(default)]
     pub log: LogSection,
+    #[serde(default)]
+    pub transport: TransportSection,
     #[serde(default)]
     pub projects: Vec<ProjectConfig>,
     /// Path to the TOML config file (set after deserialization).
@@ -81,6 +83,35 @@ pub struct ProxySection {
     /// Example: `"myhost.internal,.corp.example.com"`
     #[serde(default)]
     pub no_proxy: String,
+}
+
+/// Transport layer: unix socket and iroh P2P.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct TransportSection {
+    /// Shared secret for connection authentication + message signing.
+    /// Empty = no auth (local development only).
+    #[serde(default)]
+    pub token: String,
+    /// Path for the unix domain socket. Empty = disabled.
+    #[serde(default)]
+    pub unix_socket: String,
+    #[serde(default)]
+    #[cfg_attr(not(feature = "iroh"), allow(dead_code))]
+    pub iroh: IrohTransportCfg,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[cfg_attr(not(feature = "iroh"), allow(dead_code))]
+pub struct IrohTransportCfg {
+    #[serde(default)]
+    pub enable: bool,
+    /// Hex-encoded 32-byte secret key for a stable NodeId across restarts.
+    /// If empty, auto-generated and persisted to `<state_dir>/iroh.key`.
+    #[serde(default)]
+    pub secret_key: String,
+    /// Custom relay server URL. Empty = use default n0 relays.
+    #[serde(default)]
+    pub relay_url: String,
 }
 
 /// Embedded dashboard HTTP server.
@@ -158,6 +189,8 @@ pub struct DingtalkBackendCfg {
     pub client_secret: String,
     #[serde(default)]
     pub allowed_users: Vec<String>,
+    #[serde(default)]
+    pub card_template_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -188,7 +221,7 @@ fn default_typing_interval() -> u64 {
     5000
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AgentSection {
     /// "claude-code" | "kimi" | "qoder" | "opencode" | "kiro" | "gemini" | "hermes" | "codex" | "acp"
     #[serde(default = "default_agent_backend")]
@@ -235,7 +268,7 @@ fn default_agent_backend() -> String {
 }
 
 /// Maps to `agentline_agent_gemini::GeminiConfig`.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default, Serialize)]
 pub struct GeminiBackendCfg {
     /// Override launcher (default: `gemini`). Empty = use default.
     #[serde(default)]
@@ -247,12 +280,10 @@ pub struct GeminiBackendCfg {
     pub extra_env: Vec<(String, String)>,
     #[serde(default)]
     pub remove_env: Vec<String>,
-    #[serde(default)]
-    pub api_key: String,
 }
 
 /// Maps to `agentline_agent_kiro::KiroConfig`.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default, Serialize)]
 pub struct KiroBackendCfg {
     /// Override launcher (default: `kiro-cli`). Pass absolute path if not on
     /// the daemon's PATH (e.g. `~/.local/bin/kiro-cli`).
@@ -272,7 +303,7 @@ pub struct KiroBackendCfg {
 }
 
 /// Maps to `agentline_agent_opencode::OpencodeConfig`.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default, Serialize)]
 pub struct OpencodeBackendCfg {
     /// Override launcher (default: `opencode`). Empty = use default.
     #[serde(default)]
@@ -284,16 +315,10 @@ pub struct OpencodeBackendCfg {
     pub extra_env: Vec<(String, String)>,
     #[serde(default)]
     pub remove_env: Vec<String>,
-    /// Provider base URL (sets `OPENAI_BASE_URL`).
-    #[serde(default)]
-    pub base_url: String,
-    /// Provider API key (sets `OPENAI_API_KEY`).
-    #[serde(default)]
-    pub api_key: String,
 }
 
 /// Maps to `agentline_agent_qoder::QoderConfig`.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default, Serialize)]
 pub struct QoderBackendCfg {
     /// Override launcher (default: `qodercli`). Empty = use default.
     #[serde(default)]
@@ -305,14 +330,10 @@ pub struct QoderBackendCfg {
     pub extra_env: Vec<(String, String)>,
     #[serde(default)]
     pub remove_env: Vec<String>,
-    /// Personal access token; sets `QODER_PERSONAL_ACCESS_TOKEN` on the child.
-    /// Empty = rely on prior `qodercli login` / pre-set env.
-    #[serde(default)]
-    pub personal_access_token: String,
 }
 
 /// Maps to `agentline_agent_hermes::HermesConfig`.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default, Serialize)]
 pub struct HermesBackendCfg {
     /// Override launcher (default: `hermes`). Empty = use default.
     #[serde(default)]
@@ -327,7 +348,7 @@ pub struct HermesBackendCfg {
 }
 
 /// Maps to `agentline_agent_codex::CodexConfig`.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default, Serialize)]
 pub struct CodexBackendCfg {
     /// Override the codex binary (default: `codex` on PATH). Empty = default.
     #[serde(default)]
@@ -349,8 +370,6 @@ pub struct CodexBackendCfg {
     /// Override codex's default model (e.g. `"gpt-5-codex"`). Empty = use codex default.
     #[serde(default)]
     pub model: String,
-    #[serde(default)]
-    pub api_key: String,
 }
 
 fn default_true() -> bool {
@@ -358,7 +377,7 @@ fn default_true() -> bool {
 }
 
 /// Maps to `agentline_agent_kimi::KimiConfig`.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default, Serialize)]
 pub struct KimiBackendCfg {
     /// Override launcher (default: `kimi`). Empty = use default.
     #[serde(default)]
@@ -370,13 +389,10 @@ pub struct KimiBackendCfg {
     pub extra_env: Vec<(String, String)>,
     #[serde(default)]
     pub remove_env: Vec<String>,
-    /// Access token for non-interactive auth (sets `MOONSHOT_API_KEY`).
-    #[serde(default)]
-    pub access_token: String,
 }
 
 /// Maps to `agentline_agent_claude_code::ClaudeCodeConfig`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ClaudeCodeBackendCfg {
     /// npm version tag of `@zed-industries/claude-code-acp`. Empty = crate default.
     #[serde(default)]
@@ -418,7 +434,7 @@ fn default_inject_settings() -> bool {
 
 /// Maps to `agentline_agent_acp::AcpBackendConfig`. Used only when
 /// `agent.backend = "acp"` (generic / advanced).
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default, Serialize)]
 pub struct AcpBackendCfg {
     #[serde(default)]
     pub command: String,

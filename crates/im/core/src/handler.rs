@@ -1,15 +1,14 @@
 use agentline_bridge::Result;
 use agentline_bridge::bridge::Bridge;
-use agentline_bridge::event::{OutboundEvent, TextFormat};
-use agentline_bridge::permission::PermResponse;
-use agentline_bridge::session::SessionKey;
+use agentline_bridge::permission::PermissionResponse;
 use agentline_bridge::source::InboundHandler;
 use agentline_bridge::types::{
-    Command, CwdResult, InboundPayload, PeerRef, PermAnswerResult, PromptResult, RoutedMessage,
-    SafeResult, UserContent, YoloResult,
+    Command, ContentBlock, CwdResult, InboundPayload, ModeResult, PeerRef, PermissionResult,
+    PromptResult, RoutedMessage, SessionId, UserContent, text_prompt,
 };
 use async_trait::async_trait;
 use rust_i18n::t;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::Mutex;
 
@@ -27,30 +26,61 @@ pub enum SelectionAction {
     Cd,
 }
 
-/// IM protocol inbound handler. Composes Bridge atomic operations for
-/// the single-session interaction model used by IM platforms.
+/// IM protocol inbound handler. Composes Bridge atomic operations for the
+/// single-session-per-peer interaction model used by IM platforms.
+///
+/// Session creation is now the client's responsibility: this handler maintains
+/// a `peer → SessionId` map and lazily creates a session (on the first prompt)
+/// via `Bridge::new_session`.
 pub struct ImInboundHandler {
     pending_selection: Mutex<Option<PendingSelection>>,
+    sessions: Mutex<HashMap<String, SessionId>>,
+}
+
+/// Stable key for the `peer → SessionId` map.
+fn peer_key(source_id: &str, peer: &PeerRef) -> String {
+    format!("{source_id}|{}|{:?}", peer.user_id, peer.group_id)
 }
 
 impl ImInboundHandler {
     pub fn new() -> Self {
         Self {
             pending_selection: Mutex::new(None),
+            sessions: Mutex::new(HashMap::new()),
         }
     }
 
-    async fn send_text(bridge: &Bridge, source_id: &str, peer: &PeerRef, text: &str) -> Result<()> {
-        bridge
-            .send_event(
-                source_id,
-                peer,
-                &OutboundEvent::Text {
-                    content: text.to_string(),
-                    format: TextFormat::Plain,
-                },
-            )
+    async fn cached_session(&self, pkey: &str) -> Option<SessionId> {
+        self.sessions.lock().await.get(pkey).cloned()
+    }
+
+    async fn forget_session(&self, pkey: &str) {
+        self.sessions.lock().await.remove(pkey);
+    }
+
+    /// Resolve the session for this peer, creating one if needed.
+    async fn ensure_session(
+        &self,
+        bridge: &Bridge,
+        source_id: &str,
+        peer: &PeerRef,
+        pkey: &str,
+    ) -> Result<SessionId> {
+        if let Some(sid) = self.cached_session(pkey).await {
+            return Ok(sid);
+        }
+        let sid = bridge
+            .new_session(source_id.to_string(), peer.clone())
+            .await?;
+        self.sessions
+            .lock()
             .await
+            .insert(pkey.to_string(), sid.clone());
+        Ok(sid)
+    }
+
+    async fn send_text(bridge: &Bridge, source_id: &str, peer: &PeerRef, text: &str) -> Result<()> {
+        bridge.reply(source_id, peer, text, false).await
     }
 
     async fn send_markdown(
@@ -59,34 +89,31 @@ impl ImInboundHandler {
         peer: &PeerRef,
         text: &str,
     ) -> Result<()> {
-        bridge
-            .send_event(
-                source_id,
-                peer,
-                &OutboundEvent::Text {
-                    content: text.to_string(),
-                    format: TextFormat::Markdown,
-                },
-            )
-            .await
+        bridge.reply(source_id, peer, text, true).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn execute_command(
         &self,
         bridge: &Bridge,
         cmd: Command,
         peer: &PeerRef,
         source_id: &str,
-        key: &SessionKey,
+        pkey: &str,
+        cached: Option<SessionId>,
     ) -> Result<()> {
         match cmd {
             Command::Help => {
                 Self::send_markdown(bridge, source_id, peer, &t!("bridge.help_text")).await?;
             }
             Command::Cd(path) => {
-                let result = bridge.set_cwd(path.clone(), key).await;
+                let result = bridge.set_cwd(path.clone(), cached.as_ref()).await;
                 let msg = match result {
-                    CwdResult::Changed | CwdResult::SessionClosed { .. } => {
+                    CwdResult::Changed => {
+                        t!("bridge.cd_success", path = path.display()).to_string()
+                    }
+                    CwdResult::SessionClosed { .. } => {
+                        self.forget_session(pkey).await;
                         t!("bridge.cd_success", path = path.display()).to_string()
                     }
                     CwdResult::NotFound => {
@@ -97,28 +124,37 @@ impl ImInboundHandler {
                 Self::send_text(bridge, source_id, peer, &msg).await?;
             }
             Command::CdInteractive => {
-                self.handle_cd_interactive(bridge, peer, source_id, key)
+                self.handle_cd_interactive(bridge, peer, source_id, cached.as_ref())
                     .await?;
             }
             Command::New => {
-                bridge.close_session(key).await?;
-                bridge.set_yolo(false, key).await;
+                if let Some(sid) = &cached {
+                    bridge.close_session(sid).await?;
+                    self.forget_session(pkey).await;
+                }
+                bridge.set_mode("safe", None).await;
                 Self::send_text(bridge, source_id, peer, &t!("bridge.new_session")).await?;
             }
             Command::Close(target_id) => {
-                self.handle_close(bridge, peer, source_id, target_id, key)
+                self.handle_close(bridge, peer, source_id, target_id, pkey, cached.as_ref())
                     .await?;
             }
-            Command::Cancel => match bridge.cancel_prompt(key).await? {
-                Some(tag) => {
-                    Self::send_text(
-                        bridge,
-                        source_id,
-                        peer,
-                        &t!("bridge.cancel_done", tag = tag),
-                    )
-                    .await?;
-                }
+            Command::Cancel => match cached {
+                Some(sid) => match bridge.cancel(&sid).await? {
+                    Some(tag) => {
+                        Self::send_text(
+                            bridge,
+                            source_id,
+                            peer,
+                            &t!("bridge.cancel_done", tag = tag),
+                        )
+                        .await?;
+                    }
+                    None => {
+                        Self::send_text(bridge, source_id, peer, &t!("bridge.cancel_nothing"))
+                            .await?;
+                    }
+                },
                 None => {
                     Self::send_text(bridge, source_id, peer, &t!("bridge.cancel_nothing")).await?;
                 }
@@ -127,28 +163,32 @@ impl ImInboundHandler {
                 self.handle_agent(bridge, peer, source_id, name).await?;
             }
             Command::Sessions => {
-                self.handle_sessions(bridge, peer, source_id, key).await?;
+                self.handle_sessions(bridge, peer, source_id, cached.as_ref())
+                    .await?;
             }
             Command::Yolo => {
-                let msg = match bridge.set_yolo(true, key).await {
-                    YoloResult::Applied { tag } => t!("bridge.yolo_on", tag = tag).to_string(),
-                    YoloResult::Pending => t!("bridge.yolo_on_next").to_string(),
+                let msg = match bridge.set_mode("yolo", cached.as_ref()).await {
+                    ModeResult::Applied { tag } => t!("bridge.yolo_on", tag = tag).to_string(),
+                    ModeResult::Pending => t!("bridge.yolo_on_next").to_string(),
+                    ModeResult::NoSession => t!("bridge.yolo_on_next").to_string(),
                 };
                 Self::send_text(bridge, source_id, peer, &msg).await?;
             }
             Command::Safe => {
-                let msg = match bridge.set_safe(key).await {
-                    SafeResult::Applied { tag } => t!("bridge.yolo_off", tag = tag).to_string(),
-                    SafeResult::NoSession => t!("bridge.safe_mode").to_string(),
+                let msg = match bridge.set_mode("safe", cached.as_ref()).await {
+                    ModeResult::Applied { tag } => t!("bridge.yolo_off", tag = tag).to_string(),
+                    ModeResult::Pending | ModeResult::NoSession => {
+                        t!("bridge.safe_mode").to_string()
+                    }
                 };
                 Self::send_text(bridge, source_id, peer, &msg).await?;
             }
             Command::YesToken | Command::NoToken | Command::SessionApprove => {
-                self.handle_yes_no_session(bridge, cmd, peer, source_id, key)
+                self.handle_yes_no_session(bridge, cmd, peer, source_id, pkey, cached)
                     .await?;
             }
             Command::Plain(text) => {
-                self.handle_plain_text(bridge, text, peer, source_id, key)
+                self.handle_plain_text(bridge, text, peer, source_id, pkey, cached)
                     .await?;
             }
         }
@@ -161,7 +201,8 @@ impl ImInboundHandler {
         content: UserContent,
         peer: &PeerRef,
         source_id: &str,
-        key: &SessionKey,
+        pkey: &str,
+        cached: Option<SessionId>,
     ) -> Result<()> {
         if content.is_empty() {
             tracing::debug!("ignoring empty content");
@@ -169,25 +210,33 @@ impl ImInboundHandler {
         }
         let text = content.to_prompt_text();
 
-        if bridge.answer_elicitation(&text, None, key).await {
-            return Ok(());
-        }
-
-        if bridge.override_pending_perm(key).await {
-            Self::send_text(bridge, source_id, peer, &t!("bridge.override_cancel")).await?;
+        if let Some(sid) = &cached {
+            if bridge.respond_elicitation(&text, None, sid).await {
+                return Ok(());
+            }
+            if bridge.override_pending_perm(sid).await {
+                Self::send_text(bridge, source_id, peer, &t!("bridge.override_cancel")).await?;
+            }
         }
 
         if let Ok(n) = text.trim().parse::<usize>() {
             let sel = self.pending_selection.lock().await.take();
             if let Some(ps) = sel {
                 return self
-                    .handle_selection(bridge, ps, n, peer, source_id, key)
+                    .handle_selection(bridge, ps, n, peer, source_id, pkey, cached)
                     .await;
             }
         }
 
-        self.dispatch_prompt(bridge, key, peer.clone(), text, source_id.to_string())
-            .await?;
+        self.dispatch_prompt(
+            bridge,
+            peer,
+            source_id,
+            pkey,
+            cached,
+            content.to_content_blocks(),
+        )
+        .await?;
         Ok(())
     }
 
@@ -197,12 +246,13 @@ impl ImInboundHandler {
         cmd: Command,
         peer: &PeerRef,
         source_id: &str,
-        key: &SessionKey,
+        pkey: &str,
+        cached: Option<SessionId>,
     ) -> Result<()> {
         let resp = match &cmd {
-            Command::YesToken => PermResponse::Once,
-            Command::SessionApprove => PermResponse::Session,
-            _ => PermResponse::Deny,
+            Command::YesToken => PermissionResponse::Once,
+            Command::SessionApprove => PermissionResponse::Session,
+            _ => PermissionResponse::Deny,
         };
         let text = match &cmd {
             Command::YesToken => "y",
@@ -211,7 +261,9 @@ impl ImInboundHandler {
             _ => "",
         };
 
-        if bridge.answer_elicitation(text, None, key).await {
+        if let Some(sid) = &cached
+            && bridge.respond_elicitation(text, None, sid).await
+        {
             return Ok(());
         }
 
@@ -220,24 +272,22 @@ impl ImInboundHandler {
             return Ok(());
         }
 
-        match bridge.answer_permission(resp, key).await {
-            PermAnswerResult::Answered { effective } => {
+        let answer = match &cached {
+            Some(sid) => bridge.respond_permission(resp, sid).await,
+            None => PermissionResult::NoPending,
+        };
+        match answer {
+            PermissionResult::Answered { effective } => {
                 let body = match effective {
-                    PermResponse::Once => t!("bridge.approved_once"),
-                    PermResponse::Session => t!("bridge.approved_session"),
-                    PermResponse::Deny => t!("bridge.denied"),
+                    PermissionResponse::Once => t!("bridge.approved_once"),
+                    PermissionResponse::Session => t!("bridge.approved_session"),
+                    PermissionResponse::Deny => t!("bridge.denied"),
                 };
                 Self::send_text(bridge, source_id, peer, &body).await?;
             }
-            PermAnswerResult::NoPending => {
-                self.dispatch_prompt(
-                    bridge,
-                    key,
-                    peer.clone(),
-                    text.to_string(),
-                    source_id.to_string(),
-                )
-                .await?;
+            PermissionResult::NoPending => {
+                self.dispatch_prompt(bridge, peer, source_id, pkey, cached, text_prompt(text))
+                    .await?;
             }
         }
         Ok(())
@@ -249,26 +299,29 @@ impl ImInboundHandler {
         text: String,
         peer: &PeerRef,
         source_id: &str,
-        key: &SessionKey,
+        pkey: &str,
+        cached: Option<SessionId>,
     ) -> Result<()> {
-        if bridge.answer_elicitation(&text, None, key).await {
-            return Ok(());
-        }
-        if bridge.override_pending_perm(key).await {
-            Self::send_text(bridge, source_id, peer, &t!("bridge.override_cancel")).await?;
-            self.dispatch_prompt(bridge, key, peer.clone(), text, source_id.to_string())
-                .await?;
-            return Ok(());
+        if let Some(sid) = &cached {
+            if bridge.respond_elicitation(&text, None, sid).await {
+                return Ok(());
+            }
+            if bridge.override_pending_perm(sid).await {
+                Self::send_text(bridge, source_id, peer, &t!("bridge.override_cancel")).await?;
+                self.dispatch_prompt(bridge, peer, source_id, pkey, cached, text_prompt(&text))
+                    .await?;
+                return Ok(());
+            }
         }
         if let Ok(n) = text.trim().parse::<usize>() {
             let sel = self.pending_selection.lock().await.take();
             if let Some(ps) = sel {
                 return self
-                    .handle_selection(bridge, ps, n, peer, source_id, key)
+                    .handle_selection(bridge, ps, n, peer, source_id, pkey, cached)
                     .await;
             }
         }
-        self.dispatch_prompt(bridge, key, peer.clone(), text, source_id.to_string())
+        self.dispatch_prompt(bridge, peer, source_id, pkey, cached, text_prompt(text))
             .await?;
         Ok(())
     }
@@ -278,12 +331,15 @@ impl ImInboundHandler {
         bridge: &Bridge,
         peer: &PeerRef,
         source_id: &str,
-        key: &SessionKey,
+        cached: Option<&SessionId>,
     ) -> Result<()> {
         let (cwd, dirs) = bridge.get_cwd_and_subdirs().await;
 
         if dirs.is_empty() {
-            let info = bridge.session_info(key).await;
+            let info = match cached {
+                Some(sid) => bridge.session_info(sid).await,
+                None => None,
+            };
             let tag = info
                 .map(|i| format!("[#{} {}]", i.short_id, i.agent_name))
                 .unwrap_or_default();
@@ -321,15 +377,20 @@ impl ImInboundHandler {
         peer: &PeerRef,
         source_id: &str,
         target_id: Option<u32>,
-        key: &SessionKey,
+        pkey: &str,
+        cached: Option<&SessionId>,
     ) -> Result<()> {
-        let info = bridge.session_info(key).await;
+        let info = match cached {
+            Some(sid) => bridge.session_info(sid).await,
+            None => None,
+        };
 
         if let Some(id) = target_id {
-            if let Some(ref info) = info
+            if let (Some(sid), Some(info)) = (cached, &info)
                 && info.short_id == id
             {
-                let tag = bridge.close_session(key).await?.unwrap_or_default();
+                let tag = bridge.close_session(sid).await?.unwrap_or_default();
+                self.forget_session(pkey).await;
                 Self::send_text(bridge, source_id, peer, &t!("bridge.close_done", tag = tag))
                     .await?;
                 return Ok(());
@@ -371,17 +432,19 @@ impl ImInboundHandler {
         name: Option<String>,
     ) -> Result<()> {
         match name {
-            None => match bridge.list_agents().await {
+            None => match bridge.list_providers().await {
                 Some((current, agents)) => {
                     let text = format_agent_list(&current, &agents);
-                    Self::send_text(bridge, source_id, peer, &text).await?;
+                    bridge
+                        .reply_agent_list(source_id, peer, &current, &agents, &text)
+                        .await?;
                 }
                 None => {
                     Self::send_text(bridge, source_id, peer, &t!("bridge.agent_no_factory"))
                         .await?;
                 }
             },
-            Some(name) => match bridge.switch_agent(&name).await {
+            Some(name) => match bridge.set_provider(&name).await {
                 Ok(()) => {
                     Self::send_text(
                         bridge,
@@ -394,7 +457,7 @@ impl ImInboundHandler {
                 Err(e) => {
                     let msg = e.to_string();
                     if msg.contains("not found") {
-                        let agents = bridge.list_agents().await;
+                        let agents = bridge.list_providers().await;
                         let usable: Vec<String> = agents
                             .iter()
                             .flat_map(|(_, list)| list.iter())
@@ -432,14 +495,19 @@ impl ImInboundHandler {
         bridge: &Bridge,
         peer: &PeerRef,
         source_id: &str,
-        key: &SessionKey,
+        cached: Option<&SessionId>,
     ) -> Result<()> {
-        let info = bridge.session_info(key).await;
+        let info = match cached {
+            Some(sid) => bridge.session_info(sid).await,
+            None => None,
+        };
+        let text = format_session_list(info.as_ref());
         bridge
-            .send_event(source_id, peer, &OutboundEvent::SessionList { info })
+            .reply_session_info(source_id, peer, info.as_ref(), &text)
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_selection(
         &self,
         bridge: &Bridge,
@@ -447,7 +515,8 @@ impl ImInboundHandler {
         n: usize,
         peer: &PeerRef,
         source_id: &str,
-        key: &SessionKey,
+        pkey: &str,
+        cached: Option<SessionId>,
     ) -> Result<()> {
         if n == 0 {
             let len = sel.choices.len();
@@ -477,9 +546,13 @@ impl ImInboundHandler {
         match sel.action {
             SelectionAction::Cd => {
                 let path = PathBuf::from(choice);
-                let result = bridge.set_cwd(path.clone(), key).await;
+                let result = bridge.set_cwd(path.clone(), cached.as_ref()).await;
                 let msg = match result {
-                    CwdResult::Changed | CwdResult::SessionClosed { .. } => {
+                    CwdResult::Changed => {
+                        t!("bridge.cd_success", path = path.display()).to_string()
+                    }
+                    CwdResult::SessionClosed { .. } => {
+                        self.forget_session(pkey).await;
                         t!("bridge.cd_success", path = path.display()).to_string()
                     }
                     CwdResult::NotFound => {
@@ -490,7 +563,11 @@ impl ImInboundHandler {
                 Self::send_text(bridge, source_id, peer, &msg).await?;
             }
             SelectionAction::Close => {
-                let tag = bridge.close_session(key).await?.unwrap_or_default();
+                let tag = match &cached {
+                    Some(sid) => bridge.close_session(sid).await?.unwrap_or_default(),
+                    None => String::new(),
+                };
+                self.forget_session(pkey).await;
                 Self::send_text(bridge, source_id, peer, &t!("bridge.close_done", tag = tag))
                     .await?;
             }
@@ -501,17 +578,30 @@ impl ImInboundHandler {
     async fn dispatch_prompt(
         &self,
         bridge: &Bridge,
-        key: &SessionKey,
-        peer: PeerRef,
-        text: String,
-        source_id: String,
+        peer: &PeerRef,
+        source_id: &str,
+        pkey: &str,
+        cached: Option<SessionId>,
+        content: Vec<ContentBlock>,
     ) -> Result<()> {
-        match bridge
-            .send_prompt(key.clone(), peer.clone(), text, source_id.clone())
-            .await?
-        {
+        let sid = match cached {
+            Some(sid) => sid,
+            None => self.ensure_session(bridge, source_id, peer, pkey).await?,
+        };
+        let result = match bridge.prompt(sid, content.clone()).await {
+            // Our cached mapping outlived its session (e.g. `/agent` switched
+            // backend and drained every session bridge-side) — forget it and
+            // create a fresh one instead of silently going nowhere forever.
+            Err(agentline_bridge::Error::SessionNotFound(_)) => {
+                self.forget_session(pkey).await;
+                let fresh = self.ensure_session(bridge, source_id, peer, pkey).await?;
+                bridge.prompt(fresh, content).await?
+            }
+            other => other?,
+        };
+        match result {
             PromptResult::Queued { tag } => {
-                Self::send_text(bridge, &source_id, &peer, &t!("bridge.queued", tag = tag)).await?;
+                Self::send_text(bridge, source_id, peer, &t!("bridge.queued", tag = tag)).await?;
             }
             PromptResult::Started => {}
         }
@@ -530,7 +620,8 @@ impl InboundHandler for ImInboundHandler {
     async fn handle(&self, bridge: &Bridge, routed: RoutedMessage) -> Result<()> {
         let source_id = routed.source_id;
         let peer = routed.peer;
-        let key = SessionKey::new(&source_id, &peer);
+        let pkey = peer_key(&source_id, &peer);
+        let cached = self.cached_session(&pkey).await;
 
         tracing::info!(
             source = %source_id,
@@ -540,22 +631,29 @@ impl InboundHandler for ImInboundHandler {
 
         match routed.payload {
             InboundPayload::Command(cmd) => {
-                self.execute_command(bridge, cmd, &peer, &source_id, &key)
+                self.execute_command(bridge, cmd, &peer, &source_id, &pkey, cached)
                     .await?;
             }
             InboundPayload::Content(content) => {
-                self.handle_content(bridge, content, &peer, &source_id, &key)
+                self.handle_content(bridge, content, &peer, &source_id, &pkey, cached)
                     .await?;
             }
         }
         Ok(())
     }
+
+    async fn invalidate_all_sessions(&self) {
+        self.sessions.lock().await.clear();
+    }
 }
 
+/// Formatted as Markdown — bold group headers and numbered lists render
+/// cleanly via each adapter's `TextFormat::Markdown` path (card on
+/// Feishu/DingTalk when configured, plain markdown elsewhere).
 fn format_agent_list(current: &str, agents: &[agentline_bridge::AgentInfo]) -> String {
     use agentline_bridge::AgentStatus;
 
-    let mut text = format!("🤖 {}: {current}", t!("bridge.agent_list_current"));
+    let mut text = format!("🤖 **{}**: {current}", t!("bridge.agent_list_current"));
 
     let ready: Vec<&str> = agents
         .iter()
@@ -577,7 +675,7 @@ fn format_agent_list(current: &str, agents: &[agentline_bridge::AgentInfo]) -> S
         if items.is_empty() {
             return;
         }
-        text.push_str(&format!("\n\n{label}:"));
+        text.push_str(&format!("\n\n**{label}**:"));
         for (i, name) in items.iter().enumerate() {
             text.push_str(&format!("\n{}. {name}", i + 1));
         }
@@ -591,4 +689,50 @@ fn format_agent_list(current: &str, agents: &[agentline_bridge::AgentInfo]) -> S
         &not_installed,
     );
     text
+}
+
+/// Format the `/sessions` reply from a session snapshot as a Markdown table.
+/// Presentation lives in the IM layer now, not the bridge — each adapter
+/// decides how to render `TextFormat::Markdown` (card vs. plain markdown).
+fn format_session_list(info: Option<&agentline_bridge::SessionInfo>) -> String {
+    use agentline_bridge::format::{fmt_ago, fmt_local};
+    match info {
+        None => t!("bridge.session_list_empty").to_string(),
+        Some(s) => {
+            let perm = if s.is_yolo {
+                t!("bridge.yolo_label")
+            } else {
+                t!("bridge.safe_label")
+            };
+            format!(
+                "### 📋 #{id} · {agent}\n\n\
+                 | {field_h} | {value_h} |\n\
+                 |---|---|\n\
+                 | {sid_l} | `{sid}` |\n\
+                 | {type_l} | {agent} |\n\
+                 | {cwd_l} | `{cwd}` |\n\
+                 | {start_l} | {started} |\n\
+                 | {idle_l} | {idle} |\n\
+                 | {perm_l} | {perm} |\n\
+                 | {grant_l} | {grants} |",
+                id = s.short_id,
+                agent = s.agent_name,
+                field_h = t!("bridge.session_header_field"),
+                value_h = t!("bridge.session_header_value"),
+                sid_l = t!("bridge.session_id_label"),
+                sid = s.session_id,
+                type_l = t!("bridge.session_type_label"),
+                cwd_l = t!("bridge.session_cwd_label"),
+                cwd = s.cwd.display(),
+                start_l = t!("bridge.session_started_label"),
+                started = fmt_local(s.created_at),
+                idle_l = t!("bridge.session_idle_label"),
+                idle = fmt_ago(s.idle_duration),
+                perm_l = t!("bridge.session_perm_label"),
+                perm = perm,
+                grant_l = t!("bridge.session_grants_label"),
+                grants = s.grant_summary,
+            )
+        }
+    }
 }

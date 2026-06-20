@@ -11,7 +11,7 @@
 //! ```
 
 use agentline_agent_claude_code::{ClaudeCodeConfig, spawn};
-use agentline_bridge::{AgentBackend, AgentUpdate};
+use agentline_bridge::{AgentBackend, AgentUpdate, types::text_prompt};
 use futures::StreamExt;
 use std::time::Duration;
 
@@ -40,15 +40,16 @@ async fn agent_bash_inherits_no_proxy() {
     );
 
     let run = async {
-        let mut stream = backend.prompt(&sid, &prompt).await.expect("prompt");
+        let content = text_prompt(prompt);
+        let mut stream = backend.prompt(&sid, &content).await.expect("prompt");
         while let Some(update) = stream.next().await {
             match update {
                 AgentUpdate::PermissionRequest { id, what, .. } => {
                     eprintln!("[test] approving permission: {what}");
-                    let _ = backend.answer_permission(&sid, &id, true).await;
+                    let _ = backend.respond_permission(&sid, &id, true).await;
                 }
-                AgentUpdate::ToolCallStart { label, .. } => {
-                    eprintln!("[test] tool start: {label}");
+                AgentUpdate::Session(agentline_bridge::SessionUpdate::ToolCall(tc)) => {
+                    eprintln!("[test] tool start: {}", tc.title);
                 }
                 AgentUpdate::Error(e) => {
                     eprintln!("[test] agent error: {e}");

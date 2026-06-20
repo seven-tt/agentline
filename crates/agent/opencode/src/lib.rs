@@ -18,8 +18,9 @@
 //!    opencode auth login
 //!    ```
 
-pub mod error;
-pub use error::{Error, Result};
+pub mod config;
+pub mod plugin;
+pub use plugin::plugin;
 
 pub use agentline_agent_acp::AcpBackend;
 
@@ -49,7 +50,7 @@ impl OpencodeConfig {
 }
 
 /// Spawn an OpenCode agent (`opencode acp`) and return a ready-to-use `AcpBackend`.
-pub async fn spawn(cfg: OpencodeConfig) -> Result<AcpBackend> {
+pub async fn spawn(cfg: OpencodeConfig) -> agentline_bridge::Result<AcpBackend> {
     let command = cfg.command.unwrap_or_else(|| "opencode".to_string());
     let args = cfg.args.unwrap_or_else(|| vec!["acp".to_string()]);
 
@@ -59,6 +60,7 @@ pub async fn spawn(cfg: OpencodeConfig) -> Result<AcpBackend> {
         extra_env: cfg.extra_env,
         remove_env: cfg.remove_env,
         pid_file: cfg.pid_file,
+        ..Default::default()
     };
-    Ok(AcpBackend::spawn(acp_cfg).await?)
+    AcpBackend::spawn(acp_cfg).await
 }

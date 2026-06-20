@@ -1,15 +1,17 @@
 use crate::agent::{AgentBackend, AgentFactory, AgentInfo};
 use crate::error::Result;
-use crate::event::OutboundEvent;
-use crate::permission::{PendingPerm, PermResponse, PermissionDecision, PermissionPolicy};
+use crate::event::AgentEvent;
+use crate::permission::{
+    PendingPermissionRequest, PermissionDecision, PermissionPolicy, PermissionResponse,
+};
 use crate::registry::SessionRegistry;
 use crate::router::SourceRouter;
-use crate::session::{ManagedSession, SessionKey};
+use crate::session::{ChannelBinding, Session, gen_session_id};
 use crate::state::{BridgeState, PendingElicit};
-use crate::types::{ElicitField, PeerRef, Project, SessionId, SessionInfoSnapshot, ToolKind};
+use crate::types::{AgentUpdate, ContentBlock, PeerRef, Project, SessionId, SessionInfo, ToolKind};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -48,90 +50,85 @@ impl Default for BridgeConfig {
 
 pub(crate) enum BridgeCommand {
     // Public API
+    NewSession {
+        source_id: String,
+        peer: PeerRef,
+        reply: oneshot::Sender<Result<SessionId>>,
+    },
     CloseSession {
-        key: SessionKey,
+        session_id: SessionId,
         reply: oneshot::Sender<Result<Option<String>>>,
     },
-    CancelPrompt {
-        key: SessionKey,
+    Cancel {
+        session_id: SessionId,
         reply: oneshot::Sender<Result<Option<String>>>,
     },
-    SetYolo {
-        on: bool,
-        key: SessionKey,
-        reply: oneshot::Sender<crate::types::YoloResult>,
-    },
-    SetSafe {
-        key: SessionKey,
-        reply: oneshot::Sender<crate::types::SafeResult>,
+    SetMode {
+        mode: String,
+        session_id: Option<SessionId>,
+        reply: oneshot::Sender<crate::types::ModeResult>,
     },
     SetCwd {
         path: PathBuf,
-        key: SessionKey,
+        session_id: Option<SessionId>,
         reply: oneshot::Sender<crate::types::CwdResult>,
     },
     GetCwdAndSubdirs {
         reply: oneshot::Sender<(PathBuf, Vec<PathBuf>)>,
     },
-    SendPrompt {
-        key: SessionKey,
-        peer: PeerRef,
-        text: String,
-        source_id: String,
+    Prompt {
+        session_id: SessionId,
+        content: Vec<ContentBlock>,
         reply: oneshot::Sender<Result<crate::types::PromptResult>>,
     },
-    AnswerPermission {
-        response: PermResponse,
-        key: SessionKey,
-        reply: oneshot::Sender<crate::types::PermAnswerResult>,
+    RespondPermission {
+        response: PermissionResponse,
+        session_id: SessionId,
+        reply: oneshot::Sender<crate::types::PermissionResult>,
     },
-    OverridePendingPerm {
-        key: SessionKey,
+    OverridePendingPermissionRequest {
+        session_id: SessionId,
         reply: oneshot::Sender<bool>,
     },
-    AnswerElicitation {
+    RespondElicitation {
         text: String,
-        schema: Option<Vec<ElicitField>>,
-        key: SessionKey,
+        schema: Option<agent_client_protocol::ElicitationSchema>,
+        session_id: SessionId,
         reply: oneshot::Sender<bool>,
     },
-    SwitchAgent {
+    SetProvider {
         name: String,
         reply: oneshot::Sender<Result<()>>,
     },
-    ListAgents {
+    ListProviders {
         reply: oneshot::Sender<Option<(String, Vec<AgentInfo>)>>,
     },
     SessionInfo {
-        key: SessionKey,
-        reply: oneshot::Sender<Option<SessionInfoSnapshot>>,
+        session_id: SessionId,
+        reply: oneshot::Sender<Option<SessionInfo>>,
     },
 
     // Internal (used by relay/scheduler spawn tasks)
-    InsertPendingPerm {
-        key: SessionKey,
-        perm: PendingPerm,
+    InsertPendingPermissionRequest {
+        session_id: SessionId,
+        perm: PendingPermissionRequest,
     },
     InsertPendingElicit {
-        key: SessionKey,
+        session_id: SessionId,
         elicit: PendingElicit,
     },
     GetPermDecision {
-        key: SessionKey,
+        session_id: SessionId,
         tool_kind: ToolKind,
         what: String,
         reply: oneshot::Sender<PermissionDecision>,
     },
-    GetSessionCwd {
-        key: SessionKey,
-        reply: oneshot::Sender<PathBuf>,
-    },
     SetRunningSession {
-        key: SessionKey,
+        session_id: SessionId,
     },
     ClearRunningSession,
     RemoveSession {
-        key: SessionKey,
+        session_id: SessionId,
     },
     PromptTaskDone,
     SetAgentFactory {
@@ -162,7 +159,14 @@ impl Bridge {
         let router = Arc::new(router);
         let cfg = Arc::new(cfg);
 
-        let actor = BridgeActor::new(rx, tx.clone(), router.clone(), agent, (*cfg).clone());
+        let actor = BridgeActor::new(
+            rx,
+            tx.clone(),
+            router.clone(),
+            agent,
+            (*cfg).clone(),
+            handler.clone(),
+        );
         let handle = Bridge { tx, cfg, router };
         let handle_for_loop = handle.clone();
         let actor_handle = tokio::spawn(async move {
@@ -183,43 +187,55 @@ impl Bridge {
         rx.await.expect("actor dropped")
     }
 
-    pub async fn close_session(&self, key: &SessionKey) -> Result<Option<String>> {
+    /// Explicitly create a new session bound to `(source_id, peer)`. The cwd is
+    /// the bridge's current working directory (set via `set_cwd`). Returns the
+    /// external [`SessionId`] the caller should use for subsequent operations.
+    pub async fn new_session(&self, source_id: String, peer: PeerRef) -> Result<SessionId> {
+        self.send_cmd(|reply| BridgeCommand::NewSession {
+            source_id,
+            peer,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn close_session(&self, session_id: &SessionId) -> Result<Option<String>> {
         self.send_cmd(|reply| BridgeCommand::CloseSession {
-            key: key.clone(),
+            session_id: session_id.clone(),
             reply,
         })
         .await
     }
 
-    pub async fn cancel_prompt(&self, key: &SessionKey) -> Result<Option<String>> {
-        self.send_cmd(|reply| BridgeCommand::CancelPrompt {
-            key: key.clone(),
+    pub async fn cancel(&self, session_id: &SessionId) -> Result<Option<String>> {
+        self.send_cmd(|reply| BridgeCommand::Cancel {
+            session_id: session_id.clone(),
             reply,
         })
         .await
     }
 
-    pub async fn set_yolo(&self, on: bool, key: &SessionKey) -> crate::types::YoloResult {
-        self.send_cmd(|reply| BridgeCommand::SetYolo {
-            on,
-            key: key.clone(),
+    pub async fn set_mode(
+        &self,
+        mode: &str,
+        session_id: Option<&SessionId>,
+    ) -> crate::types::ModeResult {
+        self.send_cmd(|reply| BridgeCommand::SetMode {
+            mode: mode.to_string(),
+            session_id: session_id.cloned(),
             reply,
         })
         .await
     }
 
-    pub async fn set_safe(&self, key: &SessionKey) -> crate::types::SafeResult {
-        self.send_cmd(|reply| BridgeCommand::SetSafe {
-            key: key.clone(),
-            reply,
-        })
-        .await
-    }
-
-    pub async fn set_cwd(&self, path: PathBuf, key: &SessionKey) -> crate::types::CwdResult {
+    pub async fn set_cwd(
+        &self,
+        path: PathBuf,
+        session_id: Option<&SessionId>,
+    ) -> crate::types::CwdResult {
         self.send_cmd(|reply| BridgeCommand::SetCwd {
             path,
-            key: key.clone(),
+            session_id: session_id.cloned(),
             reply,
         })
         .await
@@ -230,69 +246,65 @@ impl Bridge {
             .await
     }
 
-    pub async fn send_prompt(
+    pub async fn prompt(
         &self,
-        key: SessionKey,
-        peer: PeerRef,
-        text: String,
-        source_id: String,
+        session_id: SessionId,
+        content: Vec<ContentBlock>,
     ) -> Result<crate::types::PromptResult> {
-        self.send_cmd(|reply| BridgeCommand::SendPrompt {
-            key,
-            peer,
-            text,
-            source_id,
+        self.send_cmd(|reply| BridgeCommand::Prompt {
+            session_id,
+            content,
             reply,
         })
         .await
     }
 
-    pub async fn answer_permission(
+    pub async fn respond_permission(
         &self,
-        response: PermResponse,
-        key: &SessionKey,
-    ) -> crate::types::PermAnswerResult {
-        self.send_cmd(|reply| BridgeCommand::AnswerPermission {
+        response: PermissionResponse,
+        session_id: &SessionId,
+    ) -> crate::types::PermissionResult {
+        self.send_cmd(|reply| BridgeCommand::RespondPermission {
             response,
-            key: key.clone(),
+            session_id: session_id.clone(),
             reply,
         })
         .await
     }
 
-    pub async fn override_pending_perm(&self, key: &SessionKey) -> bool {
-        self.send_cmd(|reply| BridgeCommand::OverridePendingPerm {
-            key: key.clone(),
+    pub async fn override_pending_perm(&self, session_id: &SessionId) -> bool {
+        self.send_cmd(|reply| BridgeCommand::OverridePendingPermissionRequest {
+            session_id: session_id.clone(),
             reply,
         })
         .await
     }
 
-    pub async fn answer_elicitation(
+    pub async fn respond_elicitation(
         &self,
         text: &str,
-        schema: Option<&[ElicitField]>,
-        key: &SessionKey,
+        schema: Option<&agent_client_protocol::ElicitationSchema>,
+        session_id: &SessionId,
     ) -> bool {
-        self.send_cmd(|reply| BridgeCommand::AnswerElicitation {
+        self.send_cmd(|reply| BridgeCommand::RespondElicitation {
             text: text.to_string(),
-            schema: schema.map(|s| s.to_vec()),
-            key: key.clone(),
+            schema: schema.cloned(),
+            session_id: session_id.clone(),
             reply,
         })
         .await
     }
 
-    pub async fn switch_agent(&self, name: &str) -> Result<()> {
-        self.send_cmd(|reply| BridgeCommand::SwitchAgent {
+    pub async fn set_provider(&self, name: &str) -> Result<()> {
+        self.send_cmd(|reply| BridgeCommand::SetProvider {
             name: name.to_string(),
             reply,
         })
         .await
     }
 
-    pub async fn list_agents(&self) -> Option<(String, Vec<AgentInfo>)> {
-        self.send_cmd(|reply| BridgeCommand::ListAgents { reply })
+    pub async fn list_providers(&self) -> Option<(String, Vec<AgentInfo>)> {
+        self.send_cmd(|reply| BridgeCommand::ListProviders { reply })
             .await
     }
 
@@ -300,25 +312,63 @@ impl Bridge {
         let _ = self.tx.try_send(BridgeCommand::UpdateProjects { projects });
     }
 
-    pub async fn session_info(&self, key: &SessionKey) -> Option<SessionInfoSnapshot> {
+    pub async fn session_info(&self, session_id: &SessionId) -> Option<SessionInfo> {
         self.send_cmd(|reply| BridgeCommand::SessionInfo {
-            key: key.clone(),
+            session_id: session_id.clone(),
             reply,
         })
         .await
     }
 
-    pub async fn send_event(
+    /// Send a plain-text or markdown reply directly to an IM peer. Used by the
+    /// inbound handler for command responses (not part of the agent stream).
+    pub async fn reply(
         &self,
         source_id: &str,
         peer: &PeerRef,
-        event: &OutboundEvent,
+        text: &str,
+        markdown: bool,
     ) -> Result<()> {
-        self.router.send_event(source_id, peer, event).await
+        self.router
+            .reply_text(source_id, peer, text, markdown)
+            .await
+    }
+
+    /// Send the `/sessions` reply, letting the IM adapter render the
+    /// structured snapshot natively (falls back to `fallback_markdown`).
+    pub async fn reply_session_info(
+        &self,
+        source_id: &str,
+        peer: &PeerRef,
+        info: Option<&SessionInfo>,
+        fallback_markdown: &str,
+    ) -> Result<()> {
+        self.router
+            .reply_session_info(source_id, peer, info, fallback_markdown)
+            .await
+    }
+
+    /// Send the `/agent` list reply, letting the IM adapter render it
+    /// natively (falls back to `fallback_markdown`).
+    pub async fn reply_agent_list(
+        &self,
+        source_id: &str,
+        peer: &PeerRef,
+        current: &str,
+        agents: &[AgentInfo],
+        fallback_markdown: &str,
+    ) -> Result<()> {
+        self.router
+            .reply_agent_list(source_id, peer, current, agents, fallback_markdown)
+            .await
     }
 
     pub fn config(&self) -> &BridgeConfig {
         &self.cfg
+    }
+
+    pub fn router(&self) -> &Arc<SourceRouter> {
+        &self.router
     }
 }
 
@@ -333,6 +383,7 @@ struct BridgeActor {
     router: Arc<SourceRouter>,
     cfg: BridgeConfig,
     prompt_task: Option<JoinHandle<()>>,
+    handler: Arc<dyn crate::source::InboundHandler>,
 }
 
 impl BridgeActor {
@@ -342,6 +393,7 @@ impl BridgeActor {
         router: Arc<SourceRouter>,
         agent: Arc<dyn AgentBackend>,
         cfg: BridgeConfig,
+        handler: Arc<dyn crate::source::InboundHandler>,
     ) -> Self {
         let state = BridgeState::new(cfg.default_cwd.clone(), cfg.agent_name.clone());
         Self {
@@ -353,6 +405,7 @@ impl BridgeActor {
             router,
             cfg,
             prompt_task: None,
+            handler,
         }
     }
 
@@ -402,83 +455,95 @@ impl BridgeActor {
     /// Returns true if the actor should shut down.
     async fn handle_command(&mut self, cmd: BridgeCommand) -> bool {
         match cmd {
-            BridgeCommand::CloseSession { key, reply } => {
-                let result = self.cmd_close_session(&key).await;
+            BridgeCommand::NewSession {
+                source_id,
+                peer,
+                reply,
+            } => {
+                let result = self.cmd_new_session(source_id, peer).await;
                 let _ = reply.send(result);
             }
-            BridgeCommand::CancelPrompt { key, reply } => {
-                let result = self.cmd_cancel_prompt(&key).await;
+            BridgeCommand::CloseSession { session_id, reply } => {
+                let result = self.cmd_close_session(&session_id).await;
                 let _ = reply.send(result);
             }
-            BridgeCommand::SetYolo { on, key, reply } => {
-                let result = self.cmd_set_yolo(on, &key);
+            BridgeCommand::Cancel { session_id, reply } => {
+                let result = self.cmd_cancel(&session_id).await;
                 let _ = reply.send(result);
             }
-            BridgeCommand::SetSafe { key, reply } => {
-                let result = self.cmd_set_safe(&key);
+            BridgeCommand::SetMode {
+                mode,
+                session_id,
+                reply,
+            } => {
+                let result = self.cmd_set_mode(&mode, session_id.as_ref());
                 let _ = reply.send(result);
             }
-            BridgeCommand::SetCwd { path, key, reply } => {
-                let result = self.cmd_set_cwd(path, &key).await;
+            BridgeCommand::SetCwd {
+                path,
+                session_id,
+                reply,
+            } => {
+                let result = self.cmd_set_cwd(path, session_id.as_ref()).await;
                 let _ = reply.send(result);
             }
             BridgeCommand::GetCwdAndSubdirs { reply } => {
                 let result = self.cmd_get_cwd_and_subdirs();
                 let _ = reply.send(result);
             }
-            BridgeCommand::SendPrompt {
-                key,
-                peer,
-                text,
-                source_id,
+            BridgeCommand::Prompt {
+                session_id,
+                content,
                 reply,
             } => {
-                let result = self.cmd_send_prompt(key, peer, text, source_id).await;
+                let result = self.cmd_prompt(session_id, content).await;
                 let _ = reply.send(result);
             }
-            BridgeCommand::AnswerPermission {
+            BridgeCommand::RespondPermission {
                 response,
-                key,
+                session_id,
                 reply,
             } => {
-                let result = self.cmd_answer_permission(response, &key);
+                let result = self.cmd_respond_permission(response, &session_id);
                 let _ = reply.send(result);
             }
-            BridgeCommand::OverridePendingPerm { key, reply } => {
-                let result = self.cmd_override_pending_perm(&key).await;
+            BridgeCommand::OverridePendingPermissionRequest { session_id, reply } => {
+                let result = self.cmd_override_pending_perm(&session_id).await;
                 let _ = reply.send(result);
             }
-            BridgeCommand::AnswerElicitation {
+            BridgeCommand::RespondElicitation {
                 text,
                 schema,
-                key,
+                session_id,
                 reply,
             } => {
-                let result = self.cmd_answer_elicitation(&text, schema, &key).await;
+                let result = self
+                    .cmd_respond_elicitation(&text, schema, &session_id)
+                    .await;
                 let _ = reply.send(result);
             }
-            BridgeCommand::SwitchAgent { name, reply } => {
-                let result = self.cmd_switch_agent(&name).await;
+            BridgeCommand::SetProvider { name, reply } => {
+                let result = self.cmd_set_provider(&name).await;
                 let _ = reply.send(result);
             }
-            BridgeCommand::ListAgents { reply } => {
-                let result = self.cmd_list_agents();
+            BridgeCommand::ListProviders { reply } => {
+                let result = self.cmd_list_providers();
                 let _ = reply.send(result);
             }
-            BridgeCommand::SessionInfo { key, reply } => {
-                let result = self.cmd_session_info(&key);
+            BridgeCommand::SessionInfo { session_id, reply } => {
+                let result = self.cmd_session_info(&session_id);
                 let _ = reply.send(result);
             }
 
             // Internal commands from relay/scheduler
-            BridgeCommand::InsertPendingPerm { key, perm } => {
-                self.state.pending_perms.insert(key, perm);
+            BridgeCommand::InsertPendingPermissionRequest { session_id, perm } => {
+                self.state.pending_perms.insert(session_id, perm);
             }
-            BridgeCommand::InsertPendingElicit { key, elicit } => {
-                self.state.pending_elicits.insert(key, elicit);
+            BridgeCommand::InsertPendingElicit { session_id, elicit } => {
+                self.state.pending_elicits.insert(session_id, elicit);
             }
             BridgeCommand::GetPermDecision {
-                key,
+                session_id,
                 tool_kind,
                 what,
                 reply,
@@ -486,28 +551,19 @@ impl BridgeActor {
                 let decision = self
                     .state
                     .sessions
-                    .get(&key)
-                    .map(|a| a.perm.evaluate(tool_kind, &what))
+                    .get(&session_id)
+                    .map(|s| s.perm.evaluate(tool_kind, &what, &s.cwd))
                     .unwrap_or(PermissionDecision::Ask);
                 let _ = reply.send(decision);
             }
-            BridgeCommand::GetSessionCwd { key, reply } => {
-                let cwd = self
-                    .state
-                    .sessions
-                    .get(&key)
-                    .map(|a| a.cwd.clone())
-                    .unwrap_or_else(|| self.cfg.default_cwd.clone());
-                let _ = reply.send(cwd);
-            }
-            BridgeCommand::SetRunningSession { key } => {
-                self.state.running_session = Some(key);
+            BridgeCommand::SetRunningSession { session_id } => {
+                self.state.running_session = Some(session_id);
             }
             BridgeCommand::ClearRunningSession => {
                 self.state.running_session = None;
             }
-            BridgeCommand::RemoveSession { key } => {
-                self.state.sessions.remove(&key);
+            BridgeCommand::RemoveSession { session_id } => {
+                self.state.sessions.remove(&session_id);
             }
             BridgeCommand::PromptTaskDone => {
                 self.prompt_task = None;
@@ -529,14 +585,14 @@ impl BridgeActor {
         }
         self.state.pending_prompts.clear();
         self.state.running_session = None;
-        let sids: Vec<SessionId> = self
+        let asids: Vec<_> = self
             .state
             .sessions
             .drain()
-            .map(|(_, ms)| ms.session_id)
+            .map(|(_, s)| s.agent_session_id)
             .collect();
-        for sid in sids {
-            let _ = self.agent.close_session(sid).await;
+        for asid in asids {
+            let _ = self.agent.close_session(asid).await;
         }
     }
 
@@ -548,69 +604,136 @@ impl BridgeActor {
 
     // ── Command implementations ────────────────────────────────────────
 
-    async fn cmd_close_session(&mut self, key: &SessionKey) -> Result<Option<String>> {
-        let is_running = self.state.running_session.as_ref() == Some(key);
-        let sid = self.state.sessions.get(key).map(|a| a.session_id.clone());
+    /// Explicitly create a new session in the bridge's current cwd, bound to
+    /// `(source_id, peer)`. Replaces the old implicit `ensure_session`.
+    async fn cmd_new_session(&mut self, source_id: String, peer: PeerRef) -> Result<SessionId> {
+        let agent_name = self.state.agent_name.clone();
+        let target = self.state.cwd.clone();
 
-        if is_running && let Some(ref sid) = sid {
-            self.stop_current_prompt(sid).await;
+        // Handle session_base_dir: if the cwd is under the configured base,
+        // mint a fresh per-session directory.
+        let target_cwd = if let Some(ref base) = self.cfg.session_base_dir {
+            if target == *base || target.starts_with(base) {
+                let session_dir = base.join(format!("sess-{}", crate::session::format_timestamp()));
+                if let Err(e) = std::fs::create_dir_all(&session_dir) {
+                    tracing::error!(error=%e, dir=%session_dir.display(), "failed to create session dir");
+                }
+                self.state.cwd = session_dir.clone();
+                crate::session::cleanup_old_sessions(base, 2);
+                session_dir
+            } else {
+                target
+            }
+        } else {
+            target
+        };
+
+        tracing::debug!(cwd=%target_cwd.display(), "creating agent session");
+        let agent_session_id = self.agent.new_session(&target_cwd).await?;
+        let short_id = self.state.sessions.next_short_id();
+        let id = gen_session_id();
+        tracing::debug!(session=%id, agent_session=%agent_session_id, id=short_id, "agent session ready");
+
+        let mut perm = PermissionPolicy::new();
+        if self.state.pending_yolo {
+            perm.set_yolo(true);
+        }
+        let session = Session {
+            id: id.clone(),
+            bindings: vec![ChannelBinding { source_id, peer }],
+            cwd: target_cwd,
+            agent_session_id,
+            short_id,
+            agent_name,
+            created_at: SystemTime::now(),
+            last_active: Instant::now(),
+            perm,
+            project_context_sent: false,
+        };
+        self.state.sessions.insert(id.clone(), session);
+        self.publish_registry();
+
+        Ok(id)
+    }
+
+    async fn cmd_close_session(&mut self, session_id: &SessionId) -> Result<Option<String>> {
+        let is_running = self.state.running_session.as_ref() == Some(session_id);
+        let asid = self
+            .state
+            .sessions
+            .get(session_id)
+            .map(|s| s.agent_session_id.clone());
+
+        if is_running && asid.is_some() {
+            self.stop_current_prompt().await;
         }
 
-        let active = self.state.sessions.remove(key);
-        self.state.pending_prompts.retain(|(k, _, _, _)| k != key);
-        self.state.pending_perms.remove(key);
-        self.state.pending_elicits.remove(key);
-        if self.state.running_session.as_ref() == Some(key) {
+        let active = self.state.sessions.remove(session_id);
+        self.state
+            .pending_prompts
+            .retain(|(id, _)| id != session_id);
+        self.state.pending_perms.remove(session_id);
+        self.state.pending_elicits.remove(session_id);
+        if self.state.running_session.as_ref() == Some(session_id) {
             self.state.running_session = None;
         }
         self.publish_registry();
 
-        let tag = active.as_ref().map(|a| a.tag());
-        if let Some(a) = active {
-            let _ = self.agent.close_session(a.session_id).await;
+        let tag = active.as_ref().map(|s| s.tag());
+        if let Some(s) = active {
+            let _ = self.agent.close_session(s.agent_session_id).await;
         }
         Ok(tag)
     }
 
-    async fn cmd_cancel_prompt(&mut self, key: &SessionKey) -> Result<Option<String>> {
-        let is_running = self.state.running_session.as_ref() == Some(key);
-        let info = self
-            .state
-            .sessions
-            .get(key)
-            .map(|a| (a.session_id.clone(), a.tag()));
-        self.state.pending_prompts.retain(|(k, _, _, _)| k != key);
+    async fn cmd_cancel(&mut self, session_id: &SessionId) -> Result<Option<String>> {
+        let is_running = self.state.running_session.as_ref() == Some(session_id);
+        let tag = self.state.sessions.get(session_id).map(|s| s.tag());
+        self.state
+            .pending_prompts
+            .retain(|(id, _)| id != session_id);
 
-        if is_running && let Some((ref sid, _)) = info {
-            self.stop_current_prompt(sid).await;
+        if is_running && tag.is_some() {
+            self.stop_current_prompt().await;
         }
-        Ok(info.map(|(_, tag)| tag))
+        Ok(tag)
     }
 
-    fn cmd_set_yolo(&mut self, on: bool, key: &SessionKey) -> crate::types::YoloResult {
-        use crate::types::YoloResult;
-        self.state.pending_yolo = on;
-        if let Some(a) = self.state.sessions.get_mut(key) {
-            a.perm.set_yolo(on);
-            YoloResult::Applied { tag: a.tag() }
-        } else {
-            YoloResult::Pending
+    fn cmd_set_mode(
+        &mut self,
+        mode: &str,
+        session_id: Option<&SessionId>,
+    ) -> crate::types::ModeResult {
+        use crate::types::ModeResult;
+        match mode {
+            "yolo" => {
+                self.state.pending_yolo = true;
+                if let Some(s) = session_id.and_then(|id| self.state.sessions.get_mut(id)) {
+                    s.perm.set_yolo(true);
+                    ModeResult::Applied { tag: s.tag() }
+                } else {
+                    ModeResult::Pending
+                }
+            }
+            "safe" => {
+                self.state.pending_yolo = false;
+                if let Some(s) = session_id.and_then(|id| self.state.sessions.get_mut(id)) {
+                    s.perm.set_yolo(false);
+                    s.perm.clear_grants();
+                    ModeResult::Applied { tag: s.tag() }
+                } else {
+                    ModeResult::NoSession
+                }
+            }
+            _ => ModeResult::NoSession,
         }
     }
 
-    fn cmd_set_safe(&mut self, key: &SessionKey) -> crate::types::SafeResult {
-        use crate::types::SafeResult;
-        self.state.pending_yolo = false;
-        if let Some(a) = self.state.sessions.get_mut(key) {
-            a.perm.set_yolo(false);
-            a.perm.clear_grants();
-            SafeResult::Applied { tag: a.tag() }
-        } else {
-            SafeResult::NoSession
-        }
-    }
-
-    async fn cmd_set_cwd(&mut self, path: PathBuf, key: &SessionKey) -> crate::types::CwdResult {
+    async fn cmd_set_cwd(
+        &mut self,
+        path: PathBuf,
+        session_id: Option<&SessionId>,
+    ) -> crate::types::CwdResult {
         use crate::types::CwdResult;
         if !path.exists() {
             return CwdResult::NotFound;
@@ -620,27 +743,30 @@ impl BridgeActor {
         }
 
         self.state.cwd = path.clone();
-        let to_close = self.state.sessions.get(key).and_then(|active| {
-            if active.cwd != path {
-                Some((
-                    active.session_id.clone(),
-                    self.state.running_session.as_ref() == Some(key),
-                ))
-            } else {
-                None
-            }
+        let to_close = session_id.and_then(|id| {
+            self.state.sessions.get(id).and_then(|active| {
+                if active.cwd != path {
+                    Some((
+                        id.clone(),
+                        active.agent_session_id.clone(),
+                        self.state.running_session.as_ref() == Some(id),
+                    ))
+                } else {
+                    None
+                }
+            })
         });
 
-        if let Some((sid, is_running)) = to_close {
+        if let Some((id, asid, is_running)) = to_close {
             if is_running {
-                self.stop_current_prompt(&sid).await;
+                self.stop_current_prompt().await;
             }
-            let _ = self.agent.close_session(sid).await;
+            let _ = self.agent.close_session(asid).await;
             let tag = self
                 .state
                 .sessions
-                .remove(key)
-                .map(|a| a.tag())
+                .remove(&id)
+                .map(|s| s.tag())
                 .unwrap_or_default();
             self.publish_registry();
             return CwdResult::SessionClosed { tag };
@@ -663,23 +789,28 @@ impl BridgeActor {
         (cwd, dirs)
     }
 
-    async fn cmd_send_prompt(
+    async fn cmd_prompt(
         &mut self,
-        key: SessionKey,
-        peer: PeerRef,
-        text: String,
-        source_id: String,
+        session_id: SessionId,
+        content: Vec<ContentBlock>,
     ) -> Result<crate::types::PromptResult> {
         use crate::types::PromptResult;
+        // Reject up front rather than queueing: a session can vanish out from
+        // under a caller's cached SessionId (e.g. `/agent` drains every
+        // session on backend switch). Queueing it anyway means it silently
+        // dies later in `start_next_if_idle` with nothing telling the caller
+        // to stop reusing that id — surfacing it here lets the IM handler
+        // forget the stale mapping and create a fresh session instead.
+        if self.state.sessions.get(&session_id).is_none() {
+            return Err(crate::error::Error::SessionNotFound(session_id.to_string()));
+        }
         let was_empty = self.state.pending_prompts.is_empty();
-        self.state
-            .pending_prompts
-            .push_back((key.clone(), peer, text, source_id));
         let queued_tag = if !was_empty {
-            self.state.sessions.get(&key).map(|a| a.tag())
+            self.state.sessions.get(&session_id).map(|s| s.tag())
         } else {
             None
         };
+        self.state.pending_prompts.push_back((session_id, content));
 
         self.start_next_if_idle().await;
 
@@ -689,30 +820,30 @@ impl BridgeActor {
         }
     }
 
-    fn cmd_answer_permission(
+    fn cmd_respond_permission(
         &mut self,
-        response: PermResponse,
-        key: &SessionKey,
-    ) -> crate::types::PermAnswerResult {
-        use crate::types::PermAnswerResult;
-        let Some(pp) = self.state.pending_perms.remove(key) else {
-            return PermAnswerResult::NoPending;
+        response: PermissionResponse,
+        session_id: &SessionId,
+    ) -> crate::types::PermissionResult {
+        use crate::types::PermissionResult;
+        let Some(pp) = self.state.pending_perms.remove(session_id) else {
+            return PermissionResult::NoPending;
         };
-        let effective = match self.state.sessions.get_mut(key) {
-            Some(a) => a.perm.resolve_and_apply(pp.tool_kind, response, &pp.what),
+        let effective = match self.state.sessions.get_mut(session_id) {
+            Some(s) => s.perm.resolve_and_apply(pp.tool_kind, response, &pp.what),
             None => response,
         };
         let _ = pp.responder.send(effective);
-        PermAnswerResult::Answered { effective }
+        PermissionResult::Answered { effective }
     }
 
-    async fn cmd_override_pending_perm(&mut self, key: &SessionKey) -> bool {
-        let pp = self.state.pending_perms.remove(key);
+    async fn cmd_override_pending_perm(&mut self, session_id: &SessionId) -> bool {
+        let pp = self.state.pending_perms.remove(session_id);
         if let Some(pp) = pp {
-            let is_running = self.state.running_session.as_ref() == Some(key);
-            let _ = pp.responder.send(PermResponse::Deny);
+            let is_running = self.state.running_session.as_ref() == Some(session_id);
+            let _ = pp.responder.send(PermissionResponse::Deny);
             if is_running {
-                self.stop_current_prompt(&pp.session_id).await;
+                self.stop_current_prompt().await;
             }
             true
         } else {
@@ -720,26 +851,27 @@ impl BridgeActor {
         }
     }
 
-    async fn cmd_answer_elicitation(
+    async fn cmd_respond_elicitation(
         &mut self,
         text: &str,
-        schema: Option<Vec<ElicitField>>,
-        key: &SessionKey,
+        schema: Option<agent_client_protocol::ElicitationSchema>,
+        session_id: &SessionId,
     ) -> bool {
-        let elicit = self.state.pending_elicits.remove(key);
+        let elicit = self.state.pending_elicits.remove(session_id);
         if let Some(pe) = elicit {
-            let response = crate::types::parse_elicit_response(
-                text,
-                pe.schema.as_deref().or(schema.as_deref()),
-            );
-            let _ = self.agent.answer_elicitation(&pe.elicit_id, response).await;
+            let effective_schema = pe.schema.as_ref().or(schema.as_ref());
+            let response = crate::types::parse_elicit_response(text, effective_schema);
+            let _ = self
+                .agent
+                .respond_elicitation(&pe.elicit_id, response)
+                .await;
             true
         } else {
             false
         }
     }
 
-    async fn cmd_switch_agent(&mut self, name: &str) -> Result<()> {
+    async fn cmd_set_provider(&mut self, name: &str) -> Result<()> {
         let factory = self
             .agent_factory
             .clone()
@@ -753,27 +885,28 @@ impl BridgeActor {
             )));
         }
 
-        let running_sid = self
-            .state
-            .running_session
-            .as_ref()
-            .and_then(|key| self.state.sessions.get(key).map(|a| a.session_id.clone()));
+        let was_running = self.state.running_session.is_some();
         self.state.pending_prompts.clear();
         self.state.pending_perms.clear();
         self.state.pending_elicits.clear();
         self.state.running_session = None;
-        let sids: Vec<SessionId> = self
+        let asids: Vec<_> = self
             .state
             .sessions
             .drain()
-            .map(|(_, ms)| ms.session_id)
+            .map(|(_, s)| s.agent_session_id)
             .collect();
+        // Every session we just dropped may be cached by the inbound handler
+        // (e.g. the IM layer's peer → SessionId map) — tell it to forget all
+        // of them now, instead of leaving it to find out the hard way (and
+        // recover) on the next message for each peer.
+        self.handler.invalidate_all_sessions().await;
 
-        if let Some(ref sid) = running_sid {
-            self.stop_current_prompt(sid).await;
+        if was_running {
+            self.stop_current_prompt().await;
         }
-        for sid in sids {
-            let _ = self.agent.close_session(sid).await;
+        for asid in asids {
+            let _ = self.agent.close_session(asid).await;
         }
         self.agent.shutdown().await;
 
@@ -793,30 +926,38 @@ impl BridgeActor {
         }
     }
 
-    fn cmd_list_agents(&self) -> Option<(String, Vec<AgentInfo>)> {
+    fn cmd_list_providers(&self) -> Option<(String, Vec<AgentInfo>)> {
         let factory = self.agent_factory.as_ref()?;
         let current = self.state.agent_name.clone();
         let agents = factory.available_with_status(&current);
         Some((current, agents))
     }
 
-    fn cmd_session_info(&self, key: &SessionKey) -> Option<SessionInfoSnapshot> {
-        self.state.sessions.get(key).map(|a| SessionInfoSnapshot {
-            short_id: a.short_id,
-            session_id: a.session_id.as_str().to_string(),
-            agent_name: a.agent_name.clone(),
-            cwd: a.cwd.clone(),
-            created_at: a.created_at,
-            idle_duration: a.last_active.elapsed(),
-            is_yolo: a.perm.is_yolo(),
-            grant_summary: a.perm.grant_summary(),
+    fn cmd_session_info(&self, session_id: &SessionId) -> Option<SessionInfo> {
+        self.state.sessions.get(session_id).map(|s| SessionInfo {
+            short_id: s.short_id,
+            session_id: s.id.to_string(),
+            agent_name: s.agent_name.clone(),
+            cwd: s.cwd.clone(),
+            created_at: s.created_at,
+            idle_duration: s.last_active.elapsed(),
+            is_yolo: s.perm.is_yolo(),
+            grant_summary: s.perm.grant_summary(),
         })
     }
 
     // ── Prompt lifecycle ───────────────────────────────────────────────
 
-    async fn stop_current_prompt(&mut self, sid: &SessionId) {
-        let _ = self.agent.cancel(sid).await;
+    async fn stop_current_prompt(&mut self) {
+        if let Some(asid) = self
+            .state
+            .running_session
+            .as_ref()
+            .and_then(|id| self.state.sessions.get(id))
+            .map(|s| s.agent_session_id.clone())
+        {
+            let _ = self.agent.cancel(&asid).await;
+        }
         if let Some(handle) = self.prompt_task.take() {
             handle.abort();
             let _ = handle.await;
@@ -832,66 +973,81 @@ impl BridgeActor {
         }
         self.prompt_task = None;
 
-        let Some((key, peer, text, source_id)) = self.state.pending_prompts.pop_front() else {
+        let Some((session_id, content)) = self.state.pending_prompts.pop_front() else {
             return;
         };
 
-        // Ensure session
-        let session_result = self.ensure_session(&key, &peer).await;
-        let (sid, tag) = match session_result {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::error!(error=%e, "ensure_session failed");
-                let _ = self
-                    .router
-                    .send_event(&key.source_id, &peer, &OutboundEvent::Error(e.to_string()))
-                    .await;
-                return;
-            }
+        // The session may have been closed while queued.
+        if self.state.sessions.get(&session_id).is_none() {
+            tracing::debug!(session=%session_id, "queued prompt for closed session; dropping");
+            return;
+        }
+
+        // Refresh the agent subprocess session if it idle-expired, keeping the
+        // external SessionId stable.
+        if let Err(e) = self.refresh_agent_if_idle(&session_id).await {
+            tracing::error!(error=%e, "agent session refresh failed");
+            self.send_error_to_bindings(&session_id, e.to_string())
+                .await;
+            return;
+        }
+
+        let Some(session) = self.state.sessions.get_mut(&session_id) else {
+            return;
         };
+        session.last_active = Instant::now();
+        let agent_session_id = session.agent_session_id.clone();
+        let tag = session.tag();
+        let bindings = session.bindings.clone();
+        let target_cwd = session.cwd.clone();
 
         // Inject project context if needed
-        let text = self.maybe_inject_project_context(&key, text);
+        let content = self.maybe_inject_project_context(&session_id, content);
 
         // Spawn relay task
         let tx = self.tx.clone();
         let router = self.router.clone();
         let agent = self.agent.clone();
         let cfg = self.cfg.clone();
-        let key_t = key.clone();
-        let peer_t = peer.clone();
-        let sid_t = sid.clone();
+        let sid_t = session_id.clone();
+        let bindings_t = bindings.clone();
+        let tag_err = tag.clone();
 
         let handle = tokio::spawn(async move {
             let _ = tx
-                .send(BridgeCommand::SetRunningSession { key: key_t.clone() })
+                .send(BridgeCommand::SetRunningSession {
+                    session_id: sid_t.clone(),
+                })
                 .await;
 
             if let Err(e) = crate::relay::run_prompt_task_routed(
                 router.clone(),
-                source_id,
                 agent,
                 tx.clone(),
                 cfg,
-                key_t.clone(),
-                peer_t.clone(),
-                sid_t,
+                sid_t.clone(),
+                bindings_t.clone(),
+                agent_session_id,
                 tag,
-                text,
+                target_cwd,
+                content,
             )
             .await
             {
                 tracing::error!(error=%e, "prompt task failed");
                 let _ = tx
-                    .send(BridgeCommand::RemoveSession { key: key_t.clone() })
+                    .send(BridgeCommand::RemoveSession {
+                        session_id: sid_t.clone(),
+                    })
                     .await;
-                let _ = router
-                    .send_event(
-                        &key_t.source_id,
-                        &peer_t,
-                        &OutboundEvent::Error(e.to_string()),
-                    )
-                    .await;
+                let ev = AgentEvent::new(
+                    sid_t.clone(),
+                    tag_err.clone(),
+                    AgentUpdate::Error(e.to_string()),
+                );
+                for b in &bindings_t {
+                    let _ = router.send_update(&b.source_id, &b.peer, &ev).await;
+                }
             }
 
             let _ = tx.send(BridgeCommand::ClearRunningSession).await;
@@ -901,24 +1057,74 @@ impl BridgeActor {
         self.prompt_task = Some(handle);
     }
 
-    fn maybe_inject_project_context(&mut self, key: &SessionKey, text: String) -> String {
+    /// If the session's agent subprocess has idle-expired, close it and create
+    /// a fresh one under the same external [`SessionId`].
+    async fn refresh_agent_if_idle(&mut self, session_id: &SessionId) -> Result<()> {
+        let idle_timeout = self.cfg.session_idle_timeout;
+        if idle_timeout.is_zero() {
+            return Ok(());
+        }
+        let stale = self
+            .state
+            .sessions
+            .get(session_id)
+            .map(|s| s.last_active.elapsed() > idle_timeout)
+            .unwrap_or(false);
+        if !stale {
+            return Ok(());
+        }
+
+        let Some((old_asid, cwd)) = self
+            .state
+            .sessions
+            .get(session_id)
+            .map(|s| (s.agent_session_id.clone(), s.cwd.clone()))
+        else {
+            return Ok(());
+        };
+        tracing::debug!(session=%session_id, "session idle-expired; recreating agent subprocess");
+        let _ = self.agent.close_session(old_asid).await;
+        let new_asid = self.agent.new_session(&cwd).await?;
+        if let Some(s) = self.state.sessions.get_mut(session_id) {
+            s.agent_session_id = new_asid;
+            s.project_context_sent = false;
+        }
+        Ok(())
+    }
+
+    async fn send_error_to_bindings(&self, session_id: &SessionId, msg: String) {
+        if let Some(s) = self.state.sessions.get(session_id) {
+            let ev = AgentEvent::new(session_id.clone(), s.tag(), AgentUpdate::Error(msg));
+            for b in &s.bindings {
+                let _ = self.router.send_update(&b.source_id, &b.peer, &ev).await;
+            }
+        }
+    }
+
+    fn maybe_inject_project_context(
+        &mut self,
+        session_id: &SessionId,
+        mut content: Vec<ContentBlock>,
+    ) -> Vec<ContentBlock> {
+        use crate::types::TextContent;
+
         let should_inject = self
             .state
             .sessions
-            .get(key)
-            .map(|m| !m.project_context_sent)
+            .get(session_id)
+            .map(|s| !s.project_context_sent)
             .unwrap_or(false);
 
         if !should_inject {
-            return text;
+            return content;
         }
 
-        if let Some(m) = self.state.sessions.get_mut(key) {
-            m.project_context_sent = true;
+        if let Some(s) = self.state.sessions.get_mut(session_id) {
+            s.project_context_sent = true;
         }
 
         if self.cfg.projects.is_empty() {
-            return text;
+            return content;
         }
 
         let cwd = self.state.cwd.display().to_string();
@@ -932,92 +1138,11 @@ impl BridgeActor {
              The git repositories above are available if needed. \
              Clone them on demand when the user asks to work on a project. \
              Do not clone unless requested.\n\
-             ---\n\n{}",
-            cwd, text
+             ---",
+            cwd,
         ));
-        ctx
-    }
-
-    async fn ensure_session(
-        &mut self,
-        key: &SessionKey,
-        peer: &PeerRef,
-    ) -> Result<(SessionId, String)> {
-        let idle_timeout = self.cfg.session_idle_timeout;
-        let agent_name = self.state.agent_name.clone();
-        let target = self.state.cwd.clone();
-
-        // Try to reuse existing session
-        let reuse = self.state.sessions.get(key).and_then(|a| {
-            if a.cwd != target {
-                return None;
-            }
-            if !idle_timeout.is_zero() && a.last_active.elapsed() > idle_timeout {
-                tracing::debug!(
-                    session = %a.session_id,
-                    idle_secs = a.last_active.elapsed().as_secs(),
-                    "session idle-expired; will recreate"
-                );
-                return None;
-            }
-            Some((a.session_id.clone(), a.tag()))
-        });
-
-        if let Some((sid, tag)) = reuse {
-            if let Some(a) = self.state.sessions.get_mut(key) {
-                a.last_active = Instant::now();
-            }
-            return Ok((sid, tag));
-        }
-
-        // Close old session if any
-        let to_close = self.state.sessions.remove(key);
-        if let Some(a) = to_close {
-            let _ = self.agent.close_session(a.session_id).await;
-        }
-
-        // Handle session_base_dir
-        let target_cwd = if let Some(ref base) = self.cfg.session_base_dir {
-            if target == *base || target.starts_with(base) {
-                let session_dir = base.join(format!("sess-{}", crate::session::format_timestamp()));
-                if let Err(e) = std::fs::create_dir_all(&session_dir) {
-                    tracing::error!(error=%e, dir=%session_dir.display(), "failed to create session dir");
-                }
-                self.state.cwd = session_dir.clone();
-                crate::session::cleanup_old_sessions(base, 2);
-                session_dir
-            } else {
-                target
-            }
-        } else {
-            target
-        };
-
-        tracing::debug!(cwd=%target_cwd.display(), "creating agent session");
-        let sid = self.agent.new_session(&target_cwd).await?;
-        let short_id = self.state.sessions.next_short_id();
-        tracing::debug!(session=%sid.as_str(), id=short_id, "agent session ready");
-
-        let mut perm = PermissionPolicy::new();
-        if self.state.pending_yolo {
-            perm.set_yolo(true);
-        }
-        let session = ManagedSession {
-            peer: peer.clone(),
-            cwd: target_cwd,
-            session_id: sid.clone(),
-            short_id,
-            agent_name,
-            created_at: std::time::SystemTime::now(),
-            last_active: Instant::now(),
-            perm,
-            project_context_sent: false,
-        };
-        let tag = session.tag();
-        self.state.sessions.insert(key.clone(), session);
-        self.publish_registry();
-
-        Ok((sid, tag))
+        content.insert(0, ContentBlock::Text(TextContent::new(ctx)));
+        content
     }
 }
 

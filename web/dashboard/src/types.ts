@@ -140,6 +140,8 @@ export interface SettingsConfig {
   }
   web: { bind: string }
   proxy: { http: string; https: string; no_proxy: string }
+  /** Detected from the env / login shell — what `proxy` falls back to when a field is empty. Display only. */
+  shell_proxy: { http: string; https: string; no_proxy: string }
   log: { level: string }
 }
 

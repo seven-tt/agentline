@@ -5,7 +5,8 @@
 use crate::auth::{OpenParams, TOPIC_BOT_MESSAGE, open_connection};
 use crate::error::{Error, Result};
 use crate::types::{BotCallback, DataFrame, DataFrameResponse};
-use agentline_im_core::types::{InboundMessage, MessageKind, PeerRef};
+use agentline_im_core::parse_inbound;
+use agentline_im_core::types::{InboundMessage, MessageKind, PeerRef, SourceMessage};
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -29,13 +30,14 @@ pub struct StreamConfig {
     pub open: OpenParams,
     pub allowed_users: Vec<String>,
     pub buffer: usize,
+    pub card_template_id: String,
 }
 
 /// Starts the long-lived stream loop. Returns the inbound mpsc receiver and
 /// a shared webhook cache.
 pub fn spawn_stream(
     cfg: StreamConfig,
-) -> (mpsc::Receiver<InboundMessage>, WebhookCache, JoinHandle<()>) {
+) -> (mpsc::Receiver<SourceMessage>, WebhookCache, JoinHandle<()>) {
     let webhooks: WebhookCache = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let (rx, handle) = spawn_stream_with(cfg, webhooks.clone());
     (rx, webhooks, handle)
@@ -45,7 +47,7 @@ pub fn spawn_stream(
 pub fn spawn_stream_with(
     cfg: StreamConfig,
     webhooks: WebhookCache,
-) -> (mpsc::Receiver<InboundMessage>, JoinHandle<()>) {
+) -> (mpsc::Receiver<SourceMessage>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(cfg.buffer.max(1));
     let webhooks_for_task = webhooks.clone();
     let handle = tokio::spawn(async move {
@@ -54,7 +56,7 @@ pub fn spawn_stream_with(
     (rx, handle)
 }
 
-async fn run_loop(cfg: StreamConfig, tx: mpsc::Sender<InboundMessage>, webhooks: WebhookCache) {
+async fn run_loop(cfg: StreamConfig, tx: mpsc::Sender<SourceMessage>, webhooks: WebhookCache) {
     let mut backoff = RECONNECT_MIN;
     loop {
         match run_once(&cfg, &tx, &webhooks).await {
@@ -73,7 +75,7 @@ async fn run_loop(cfg: StreamConfig, tx: mpsc::Sender<InboundMessage>, webhooks:
 
 async fn run_once(
     cfg: &StreamConfig,
-    tx: &mpsc::Sender<InboundMessage>,
+    tx: &mpsc::Sender<SourceMessage>,
     webhooks: &WebhookCache,
 ) -> Result<()> {
     let endpoint = open_connection(&cfg.open).await?;
@@ -158,7 +160,7 @@ async fn run_once(
 async fn handle_callback(
     data: &str,
     cfg: &StreamConfig,
-    tx: &mpsc::Sender<InboundMessage>,
+    tx: &mpsc::Sender<SourceMessage>,
     webhooks: &WebhookCache,
 ) -> Result<()> {
     let cb: BotCallback =
@@ -210,7 +212,7 @@ async fn handle_callback(
         kind,
         received_at: SystemTime::now(),
     };
-    tx.send(msg)
+    tx.send(parse_inbound(msg))
         .await
         .map_err(|_| Error::other("inbound channel closed"))?;
     Ok(())

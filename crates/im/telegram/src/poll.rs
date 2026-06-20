@@ -1,6 +1,8 @@
 use crate::error::Error;
+use crate::send;
 use crate::types::{ApiResponse, Update};
-use agentline_im_core::types::{InboundMessage, MessageKind, PeerRef};
+use agentline_im_core::parse_inbound;
+use agentline_im_core::types::{InboundMessage, MessageKind, PeerRef, SourceMessage};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -12,7 +14,7 @@ pub fn spawn_poll(
     token: String,
     allowed_users: Vec<String>,
     buffer: usize,
-) -> (mpsc::Receiver<InboundMessage>, tokio::task::JoinHandle<()>) {
+) -> (mpsc::Receiver<SourceMessage>, tokio::task::JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(buffer);
     let handle = tokio::spawn(async move {
         let mut offset: Option<i64> = None;
@@ -20,7 +22,9 @@ pub fn spawn_poll(
             match poll_once(&http, &api_base, &token, offset).await {
                 Ok(updates) => {
                     for update in updates {
-                        if let Some(new_offset) = process_update(&tx, &update, &allowed_users).await
+                        if let Some(new_offset) =
+                            process_update(&http, &api_base, &token, &tx, &update, &allowed_users)
+                                .await
                         {
                             offset = Some(new_offset);
                         }
@@ -83,11 +87,45 @@ async fn poll_once(
 }
 
 async fn process_update(
-    tx: &mpsc::Sender<InboundMessage>,
+    http: &reqwest::Client,
+    api_base: &str,
+    token: &str,
+    tx: &mpsc::Sender<SourceMessage>,
     update: &Update,
     allowed_users: &[String],
 ) -> Option<i64> {
     let new_offset = update.update_id + 1;
+
+    // Handle callback queries (inline keyboard button presses)
+    if let Some(cb) = &update.callback_query {
+        let _ = send::answer_callback_query(http, api_base, token, &cb.id).await;
+        if let Some(data) = &cb.data {
+            let chat_id = cb.message.as_ref().map(|m| m.chat.id).unwrap_or(0);
+            let user_id_str = cb.from.id.to_string();
+            let text = match data.as_str() {
+                "perm:y" => "y",
+                "perm:n" => "n",
+                "perm:s" => "s",
+                _ => return Some(new_offset),
+            };
+            let peer = PeerRef {
+                user_id: user_id_str,
+                group_id: None,
+                opaque: serde_json::json!({ "chat_id": chat_id }),
+            };
+            let inbound = InboundMessage {
+                peer,
+                kind: MessageKind::Text {
+                    text: text.to_string(),
+                },
+                received_at: std::time::SystemTime::now(),
+            };
+            if tx.send(parse_inbound(inbound)).await.is_err() {
+                tracing::error!("telegram: inbound channel closed");
+            }
+        }
+        return Some(new_offset);
+    }
 
     let message = match &update.message {
         Some(m) => m,
@@ -125,7 +163,7 @@ async fn process_update(
         received_at: std::time::SystemTime::now(),
     };
 
-    if tx.send(inbound).await.is_err() {
+    if tx.send(parse_inbound(inbound)).await.is_err() {
         tracing::error!("telegram: inbound channel closed");
     }
 
