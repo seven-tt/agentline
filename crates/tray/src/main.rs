@@ -806,8 +806,8 @@ fn do_download_and_install(
         }
         std::io::Write::write_all(&mut file, &buf[..n])?;
         downloaded += n as u64;
-        if content_len > 0 {
-            let pct = (downloaded * 100 / content_len).min(100) as u8;
+        if let Some(pct_val) = (downloaded * 100).checked_div(content_len) {
+            let pct = pct_val.min(100) as u8;
             if pct != last_pct {
                 last_pct = pct;
                 let _ = tx.send(UpdateMsg::Progress(pct));
