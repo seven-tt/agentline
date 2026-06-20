@@ -439,6 +439,7 @@ fn agent_pid_path(cfg: &AppConfig) -> std::path::PathBuf {
     crate::config::expand_tilde(&cfg.bridge.state_dir).join("agent.pid")
 }
 
+#[allow(unused_mut, unused_variables)]
 fn start_transports(cfg: &AppConfig, bridge: &Bridge) -> Result<Vec<std::thread::JoinHandle<()>>> {
     let mut handles = Vec::new();
     let token = if cfg.transport.token.is_empty() {

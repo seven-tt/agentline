@@ -94,6 +94,7 @@ pub struct TransportSection {
     pub token: String,
     /// Path for the unix domain socket. Empty = disabled.
     #[serde(default)]
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub unix_socket: String,
     #[serde(default)]
     #[cfg_attr(not(feature = "iroh"), allow(dead_code))]
