@@ -18,10 +18,14 @@ members = [
     "crates/agent/gemini",
     "crates/agent/hermes",
     "crates/tray",
+    "crates/transport/core",
+    "crates/transport/iroh",
+    "crates/telegramify",
+    "crates/permission",
 ]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/seven-tt/agentline"
@@ -44,7 +48,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # tracing
-tracing = "0.1"
+# release_max_level_info: in release builds, debug!/trace! (incl. the raw
+# `acp::raw` ACP I/O logs) are compiled out entirely → zero overhead in the
+# packaged app. Dev/debug builds keep full trace for debugging.
+tracing = { version = "0.1", features = ["release_max_level_info"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "time", "local-time"] }
 time = { version = "0.3", features = ["macros", "local-offset", "formatting"] }
 
@@ -63,6 +70,10 @@ cipher = "0.4"
 base64 = "0.22"
 rand = "0.8"
 qrcode = "0.14"
+
+# im-telegram markdown
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+telegramify-markdown = { path = "crates/telegramify" }
 
 # im-dingtalk
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
@@ -86,6 +97,8 @@ rust-i18n = "3"
 clap = { version = "4", features = ["derive"] }
 config = { version = "0.14", default-features = false, features = ["toml"] }
 toml = "0.8"
+toml_edit = "0.22"
+tempfile = "3"
 
 # embedded web dashboard
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
@@ -114,6 +127,7 @@ agentline-agent-opencode = { path = "crates/agent/opencode" }
 agentline-agent-kiro = { path = "crates/agent/kiro" }
 agentline-agent-gemini = { path = "crates/agent/gemini" }
 agentline-agent-hermes = { path = "crates/agent/hermes" }
+agentline-permission = { path = "crates/permission" }
 
 [profile.release]
 lto = "thin"

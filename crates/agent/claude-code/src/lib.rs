@@ -13,11 +13,12 @@
 //! `agentline_bridge::AgentBackend` impl, so you can pass it straight to a
 //! `Bridge`.
 
+pub mod config;
 pub mod env_inject;
-pub mod error;
+pub mod plugin;
 
 pub use env_inject::inject_claude_settings_env;
-pub use error::{Error, Result};
+pub use plugin::plugin;
 
 pub use agentline_agent_acp::AcpBackend;
 
@@ -96,7 +97,7 @@ impl ClaudeCodeConfig {
 }
 
 /// Spawn a Claude Code agent and return a ready-to-use `AcpBackend`.
-pub async fn spawn(cfg: ClaudeCodeConfig) -> Result<AcpBackend> {
+pub async fn spawn(cfg: ClaudeCodeConfig) -> agentline_bridge::Result<AcpBackend> {
     if cfg.inject_settings_env {
         let n = inject_claude_settings_env()?;
         if n > 0 {
@@ -121,6 +122,7 @@ pub async fn spawn(cfg: ClaudeCodeConfig) -> Result<AcpBackend> {
         extra_env: cfg.extra_env,
         remove_env,
         pid_file: cfg.pid_file,
+        ..Default::default()
     };
-    Ok(AcpBackend::spawn(acp_cfg).await?)
+    AcpBackend::spawn(acp_cfg).await
 }

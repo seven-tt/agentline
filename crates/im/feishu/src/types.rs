@@ -67,6 +67,16 @@ pub struct EventBody {
     pub message: Option<EventMessage>,
     pub operator: Option<CardOperator>,
     pub action: Option<CardAction>,
+    pub context: Option<CardActionContext>,
+}
+
+/// Identifies which card message a `card.action.trigger` click came from —
+/// needed to PATCH that specific card (disable its buttons) and to dedupe a
+/// second click on a card already answered.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CardActionContext {
+    #[serde(default, deserialize_with = "nullable_string")]
+    pub open_message_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -271,10 +281,42 @@ pub fn to_feishu_markdown(src: &str) -> String {
             continue;
         }
 
-        out.push_str(line);
+        // --- (horizontal rule) → empty line
+        if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+            continue;
+        }
+
+        // Escape <word> outside code spans to prevent HTML tag interpretation
+        out.push_str(&escape_angle_brackets(line));
     }
     flush_table(&mut out, &mut table_buf);
     out
+}
+
+/// Escape `<word>` patterns outside of backtick spans to prevent Feishu
+/// from interpreting them as HTML tags.
+fn escape_angle_brackets(line: &str) -> String {
+    let mut result = String::with_capacity(line.len());
+    let mut in_code = false;
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '`' {
+            in_code = !in_code;
+            result.push('`');
+            i += 1;
+        } else if !in_code && chars[i] == '<' {
+            result.push_str("&lt;");
+            i += 1;
+        } else if !in_code && chars[i] == '>' {
+            result.push_str("&gt;");
+            i += 1;
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+    result
 }
 
 fn is_table_row(line: &str) -> bool {
@@ -345,6 +387,20 @@ fn flush_table(out: &mut String, table: &mut Vec<Vec<String>>) {
     table.clear();
 }
 
+pub fn build_raw_md_card(title: &str, content: &str, template: &str) -> String {
+    let card = serde_json::json!({
+        "config": {"wide_screen_mode": true},
+        "header": {
+            "title": {"tag": "plain_text", "content": title},
+            "template": template,
+        },
+        "elements": [
+            {"tag": "markdown", "content": content}
+        ]
+    });
+    card.to_string()
+}
+
 pub fn build_card(title: &str, content: &str, template: &str) -> String {
     let converted = to_feishu_markdown(content);
     let card = serde_json::json!({
@@ -358,6 +414,43 @@ pub fn build_card(title: &str, content: &str, template: &str) -> String {
         ]
     });
     card.to_string()
+}
+
+/// Build a 2-column key/value grid card (Lark's `div`+`fields` layout) — a
+/// native presentation, not a markdown-table conversion. `rows` is
+/// `(label, value)` pairs in display order.
+pub fn build_fields_card(title: &str, template: &str, rows: &[(String, String)]) -> String {
+    let fields: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|(label, value)| {
+            serde_json::json!({
+                "is_short": false,
+                "text": {"tag": "lark_md", "content": format!("**{label}**\n{value}")}
+            })
+        })
+        .collect();
+    let card = serde_json::json!({
+        "config": {"wide_screen_mode": true},
+        "header": {
+            "title": {"tag": "plain_text", "content": title},
+            "template": template,
+        },
+        "elements": [
+            {"tag": "div", "fields": fields}
+        ]
+    });
+    card.to_string()
+}
+
+/// What's needed to re-render a permission card once it's been answered —
+/// captured when the card is first sent, looked up by the card's own
+/// `message_id` when a button click comes back in.
+#[derive(Debug, Clone)]
+pub struct PermCardEntry {
+    pub kind: String,
+    pub what: String,
+    pub risk_icon: &'static str,
+    pub risk: String,
 }
 
 /// Build an interactive card for permission requests with approve/deny buttons.
@@ -401,6 +494,42 @@ pub fn build_permission_card(kind: &str, what: &str, risk_icon: &str, risk: &str
                     "value": {"action": "n"}
                 }
             ]},
+            {"tag": "note", "elements": [
+                {"tag": "plain_text", "content": format!("{risk_icon} {risk}")}
+            ]}
+        ]
+    });
+    card.to_string()
+}
+
+/// Re-render a permission card with its buttons replaced by a static status
+/// line — sent as a PATCH right after the first click so the card visibly
+/// shows it's been handled (no more clickable buttons) instead of silently
+/// staying the same and inviting a second, now-meaningless click.
+pub fn build_permission_resolved_card(
+    kind: &str,
+    what: &str,
+    risk_icon: &str,
+    risk: &str,
+    status: &str,
+) -> String {
+    use rust_i18n::t;
+    let template = match risk_icon {
+        "🔴" => "red",
+        "🟡" => "orange",
+        _ => "green",
+    };
+    let title = t!("im.perm_card_title", kind = kind);
+    let converted = to_feishu_markdown(what);
+    let card = serde_json::json!({
+        "config": {"wide_screen_mode": true},
+        "header": {
+            "title": {"tag": "plain_text", "content": title.to_string()},
+            "template": template,
+        },
+        "elements": [
+            {"tag": "markdown", "content": converted},
+            {"tag": "div", "text": {"tag": "lark_md", "content": status}},
             {"tag": "note", "elements": [
                 {"tag": "plain_text", "content": format!("{risk_icon} {risk}")}
             ]}
@@ -561,6 +690,29 @@ mod tests {
         assert_eq!(v["header"]["template"], "red");
         let note = rust_i18n::t!("im.stream_failed").to_string();
         assert_eq!(v["elements"][1]["elements"][0]["content"], note);
+    }
+
+    #[test]
+    fn resolved_card_has_no_action_buttons() {
+        // The whole point: once a permission card is answered, re-rendering
+        // it must drop the "action" element entirely so there's nothing left
+        // to click — that's what stops a second click from happening at all,
+        // on top of the server-side dedup.
+        let json = build_permission_resolved_card(
+            "Shell",
+            "rm -rf /tmp/x",
+            "🔴",
+            "高危",
+            "✅ 已批准（单次）",
+        );
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let elements = v["elements"].as_array().unwrap();
+        assert!(
+            !elements.iter().any(|e| e["tag"] == "action"),
+            "resolved card still has clickable buttons: {json}"
+        );
+        assert!(json.contains("已批准"));
+        assert_eq!(v["header"]["template"], "red");
     }
 
     #[test]

@@ -25,10 +25,12 @@ pub use http::HttpClient;
 pub use poll::{ContextTokenCache, CursorCell, CursorPersist, NoopPersist, spawn_poller};
 pub use token::TokenRegistry;
 
-use agentline_im_core::PermissionDanger;
 use agentline_im_core::event::OutboundEvent;
 use agentline_im_core::source::{ImAdapter, ImCapabilities, InputSource, InputSourceKind};
-use agentline_im_core::types::{ElicitFieldType, PeerRef};
+use agentline_im_core::types::{
+    AgentUpdate, ElicitationPropertySchema, PeerRef, multi_select_options, single_select_options,
+};
+use agentline_im_core::{AgentEvent, PermissionDanger, RenderState, synthesize};
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -204,6 +206,11 @@ struct ActiveStream {
     signaled: bool,
     /// Accumulated text when streaming is not available.
     buffered_text: String,
+    /// Byte length of the `"🤖 {tag} "` header prefix within `buffered_text`,
+    /// so a tool call that interrupts the stream before any chunk arrives
+    /// can be detected and the header-only message suppressed.
+    #[allow(dead_code)]
+    header_len: usize,
     /// Accumulated thinking char count for summary on ThinkingEnd.
     thinking_chars: usize,
 }
@@ -260,6 +267,8 @@ pub struct WechatChannel {
     agent_done: Arc<Mutex<HashSet<String>>>,
     /// Per-user typing indicator loop handles.
     typing_guards: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    /// Per-session render synthesis state, keyed by session id.
+    render_states: Arc<Mutex<HashMap<String, RenderState>>>,
     /// Deferred start config (consumed by `InputSource::start()`).
     deferred_start: Mutex<Option<DeferredStart>>,
 }
@@ -278,7 +287,7 @@ impl WechatChannel {
         initial_context_tokens: HashMap<String, String>,
     ) -> (
         Self,
-        tokio::sync::mpsc::Receiver<agentline_im_core::types::InboundMessage>,
+        tokio::sync::mpsc::Receiver<agentline_im_core::types::SourceMessage>,
         tokio::task::JoinHandle<()>,
         CursorCell,
     ) {
@@ -354,6 +363,7 @@ impl WechatChannel {
                 })),
                 agent_done,
                 typing_guards: Arc::new(Mutex::new(HashMap::new())),
+                render_states: Arc::new(Mutex::new(HashMap::new())),
                 deferred_start: Mutex::new(None),
             },
             rx,
@@ -430,6 +440,7 @@ impl WechatChannel {
             })),
             agent_done,
             typing_guards: Arc::new(Mutex::new(HashMap::new())),
+            render_states: Arc::new(Mutex::new(HashMap::new())),
             deferred_start: Mutex::new(Some(DeferredStart {
                 initial_cursor,
                 persist,
@@ -736,17 +747,10 @@ impl InputSource for WechatChannel {
         InputSourceKind::Im
     }
 
-    fn parse_message(
-        &self,
-        msg: &agentline_im_core::types::InboundMessage,
-    ) -> agentline_im_core::types::InboundPayload {
-        agentline_im_core::default_parse_message(msg)
-    }
-
     async fn start(
         &self,
     ) -> agentline_im_core::Result<
-        tokio::sync::mpsc::Receiver<agentline_im_core::types::InboundMessage>,
+        tokio::sync::mpsc::Receiver<agentline_im_core::types::SourceMessage>,
     > {
         let ds = self
             .deferred_start
@@ -767,7 +771,30 @@ impl InputSource for WechatChannel {
         Ok(rx)
     }
 
-    async fn send_event(
+    async fn send_update(&self, to: &PeerRef, event: &AgentEvent) -> agentline_im_core::Result<()> {
+        let sid = event.session_id.to_string();
+        let actions = {
+            let mut states = self.render_states.lock().await;
+            let st = states.entry(sid.clone()).or_default();
+            synthesize(st, event.update.clone(), &event.tag)
+        };
+        let is_done = matches!(event.update, AgentUpdate::Done);
+        for action in &actions {
+            self.render_action(to, action).await?;
+        }
+        if is_done {
+            self.render_states.lock().await.remove(&sid);
+        }
+        Ok(())
+    }
+
+    async fn shutdown(&self) -> agentline_im_core::Result<()> {
+        self.shutdown_impl().await
+    }
+}
+
+impl WechatChannel {
+    async fn render_action(
         &self,
         to: &PeerRef,
         event: &OutboundEvent,
@@ -805,6 +832,7 @@ impl InputSource for WechatChannel {
                         last_activity: std::time::Instant::now(),
                         signaled: false,
                         buffered_text: String::new(),
+                        header_len: 0,
                         thinking_chars: 0,
                     });
                 active.thinking_chars += text.chars().count();
@@ -845,6 +873,7 @@ impl InputSource for WechatChannel {
                         last_activity: std::time::Instant::now(),
                         signaled: false,
                         buffered_text: String::new(),
+                        header_len: 0,
                         thinking_chars: 0,
                     });
                 if let Some(ref mut sender) = active.sender {
@@ -945,6 +974,7 @@ impl InputSource for WechatChannel {
                                 last_activity: std::time::Instant::now(),
                                 signaled: false,
                                 buffered_text: String::new(),
+                                header_len: 0,
                                 thinking_chars: 0,
                             },
                         );
@@ -1100,33 +1130,37 @@ impl InputSource for WechatChannel {
                     self.send_plain(to, &buffered).await?;
                 }
                 let mut s = format!("💬 {prompt}");
-                if let Some(fields) = schema {
-                    for field in fields {
-                        match &field.field_type {
-                            ElicitFieldType::SingleSelect { options }
-                            | ElicitFieldType::MultiSelect { options } => {
-                                s.push('\n');
-                                for (i, opt) in options.iter().enumerate() {
-                                    s.push_str(&format!("\n{}. {}", i + 1, opt.label));
-                                    if let Some(desc) = &opt.description {
-                                        s.push_str(&format!("  ({})", desc));
+                if let Some(schema) = schema {
+                    if let Some((_, prop)) = schema.properties.iter().next() {
+                        match prop {
+                            ElicitationPropertySchema::String(sp) => {
+                                if let Some(options) = single_select_options(sp) {
+                                    s.push('\n');
+                                    for (i, (_, label)) in options.iter().enumerate() {
+                                        s.push_str(&format!("\n{}. {}", i + 1, label));
                                     }
+                                    s.push_str(&t!("im.elicit_select_hint"));
+                                } else {
+                                    s.push_str(&t!("im.elicit_free_hint"));
                                 }
-                                let hint = match &field.field_type {
-                                    ElicitFieldType::MultiSelect { .. } => {
-                                        t!("im.elicit_multi_hint")
-                                    }
-                                    _ => t!("im.elicit_select_hint"),
-                                };
-                                s.push_str(&hint);
                             }
-                            ElicitFieldType::Boolean => {
+                            ElicitationPropertySchema::Array(ms) => {
+                                let options = multi_select_options(&ms.items);
+                                s.push('\n');
+                                for (i, (_, label)) in options.iter().enumerate() {
+                                    s.push_str(&format!("\n{}. {}", i + 1, label));
+                                }
+                                s.push_str(&t!("im.elicit_multi_hint"));
+                            }
+                            ElicitationPropertySchema::Boolean(_) => {
                                 s.push_str(&t!("im.elicit_bool_hint"));
                             }
                             _ => {
                                 s.push_str(&t!("im.elicit_free_hint"));
                             }
                         }
+                    } else {
+                        s.push_str(&t!("im.elicit_free_hint"));
                     }
                 } else {
                     s.push_str(&t!("im.elicit_free_hint"));
@@ -1146,49 +1180,6 @@ impl InputSource for WechatChannel {
                 }
                 self.send_plain(to, text.trim_end()).await
             }
-
-            OutboundEvent::SessionList { info } => match info {
-                None => self.send_plain(to, &t!("bridge.session_list_empty")).await,
-                Some(s) => {
-                    let perm = if s.is_yolo {
-                        t!("bridge.yolo_label")
-                    } else {
-                        t!("bridge.safe_label")
-                    };
-                    let text = format!(
-                        "## 📋 {title}\n\n\
-                         ### `#{id}` · {agent}\n\
-                         | {f} | {v} |\n\
-                         | :--- | :--- |\n\
-                         | {sid_l} | `{sid}` |\n\
-                         | {type_l} | {agent} |\n\
-                         | {cwd_l} | `{cwd}` |\n\
-                         | {start_l} | {started} |\n\
-                         | {idle_l} | {idle} |\n\
-                         | {perm_l} | {perm} |\n\
-                         | {grant_l} | {grants} |",
-                        title = t!("bridge.session_title", count = 1),
-                        id = s.short_id,
-                        agent = s.agent_name,
-                        f = t!("bridge.session_header_field"),
-                        v = t!("bridge.session_header_value"),
-                        sid_l = t!("bridge.session_id_label"),
-                        sid = s.session_id,
-                        type_l = t!("bridge.session_type_label"),
-                        cwd_l = t!("bridge.session_cwd_label"),
-                        cwd = s.cwd.display(),
-                        start_l = t!("bridge.session_started_label"),
-                        started = agentline_im_core::format::fmt_local(s.created_at),
-                        idle_l = t!("bridge.session_idle_label"),
-                        idle = agentline_im_core::format::fmt_ago(s.idle_duration),
-                        perm_l = t!("bridge.session_perm_label"),
-                        perm = perm,
-                        grant_l = t!("bridge.session_grants_label"),
-                        grants = s.grant_summary,
-                    );
-                    self.send_plain(to, &text).await
-                }
-            },
 
             OutboundEvent::ModeChanged { .. } | OutboundEvent::SessionTitle { .. } => {
                 agentline_im_core::render_outbound_event(self, to, event).await
@@ -1214,7 +1205,7 @@ impl InputSource for WechatChannel {
         }
     }
 
-    async fn shutdown(&self) -> agentline_im_core::Result<()> {
+    async fn shutdown_impl(&self) -> agentline_im_core::Result<()> {
         Ok(())
     }
 }

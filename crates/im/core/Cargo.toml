@@ -13,9 +13,11 @@ categories.workspace = true
 readme.workspace = true
 
 [dependencies]
+agent-client-protocol = { workspace = true }
 agentline-bridge = { workspace = true }
 async-trait = { workspace = true }
 dirs = { workspace = true }
 rust-i18n = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

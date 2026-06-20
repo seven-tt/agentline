@@ -7,7 +7,11 @@
 //! Updated frame, we map text-bearing items at the `Started` and
 //! `Completed` boundaries only.
 
-use agentline_bridge::{AgentUpdate, ToolKind};
+use agentline_bridge::AgentUpdate;
+use agentline_bridge::types::{
+    AcpToolKind, ContentBlock, ContentChunk, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus,
+    SessionUpdate, TextContent, ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+};
 use codex_app_server_sdk::api::{
     CommandExecutionStatus, PatchApplyStatus, ThreadEvent, ThreadItem,
 };
@@ -19,8 +23,6 @@ pub fn map_thread_event(event: ThreadEvent) -> Vec<AgentUpdate> {
         ThreadEvent::ItemCompleted { item } => map_item(item, Phase::Completed),
         ThreadEvent::TurnFailed { error } => vec![AgentUpdate::Error(error.message)],
         ThreadEvent::Error { message } => vec![AgentUpdate::Error(message)],
-        // ThreadStarted / TurnStarted / TurnCompleted are bookkeeping;
-        // the bridge handles "done" via the explicit Done update.
         _ => Vec::new(),
     }
 }
@@ -32,26 +34,62 @@ enum Phase {
     Completed,
 }
 
+fn text_chunk(text: String) -> AgentUpdate {
+    AgentUpdate::Session(SessionUpdate::AgentMessageChunk(ContentChunk::new(
+        ContentBlock::Text(TextContent::new(text)),
+    )))
+}
+
+fn tool_start(id: String, kind: AcpToolKind, label: String) -> AgentUpdate {
+    AgentUpdate::Session(SessionUpdate::ToolCall(
+        ToolCall::new(id, label)
+            .kind(kind)
+            .status(ToolCallStatus::InProgress),
+    ))
+}
+
+fn tool_progress(id: String, output: String) -> AgentUpdate {
+    let fields = ToolCallUpdateFields::new().raw_output(serde_json::Value::String(output));
+    AgentUpdate::Session(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+        id, fields,
+    )))
+}
+
+fn tool_end(id: String, ok: bool, summary: Option<String>) -> AgentUpdate {
+    let status = if ok {
+        ToolCallStatus::Completed
+    } else {
+        ToolCallStatus::Failed
+    };
+    let mut fields = ToolCallUpdateFields::new().status(status);
+    if let Some(s) = summary {
+        fields = fields.raw_output(serde_json::Value::String(s));
+    }
+    AgentUpdate::Session(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+        id, fields,
+    )))
+}
+
+fn plan_update(steps: Vec<String>) -> AgentUpdate {
+    let entries = steps
+        .into_iter()
+        .map(|s| PlanEntry::new(s, PlanEntryPriority::Medium, PlanEntryStatus::Pending))
+        .collect();
+    AgentUpdate::Session(SessionUpdate::Plan(Plan::new(entries)))
+}
+
 fn map_item(item: ThreadItem, phase: Phase) -> Vec<AgentUpdate> {
     match item {
         ThreadItem::AgentMessage(msg) => {
-            // Emit text at Completed only — earlier phases may carry
-            // incremental snapshots that would duplicate output.
             if phase == Phase::Completed && !msg.text.is_empty() {
-                let is_final = msg.is_final_answer();
-                vec![AgentUpdate::AssistantText {
-                    delta: msg.text,
-                    is_final,
-                }]
+                vec![text_chunk(msg.text)]
             } else {
                 Vec::new()
             }
         }
         ThreadItem::Plan(p) => {
             if phase == Phase::Completed {
-                vec![AgentUpdate::Plan {
-                    steps: vec![p.text],
-                }]
+                vec![plan_update(vec![p.text])]
             } else {
                 Vec::new()
             }
@@ -60,23 +98,16 @@ fn map_item(item: ThreadItem, phase: Phase) -> Vec<AgentUpdate> {
         ThreadItem::CommandExecution(cmd) => {
             let id = cmd.id.clone();
             match phase {
-                Phase::Started => vec![AgentUpdate::ToolCallStart {
-                    id,
-                    kind: ToolKind::Shell,
-                    label: cmd.command,
-                }],
+                Phase::Started => vec![tool_start(id, AcpToolKind::Execute, cmd.command)],
                 Phase::Updated => Vec::new(),
                 Phase::Completed => {
                     let mut out = Vec::new();
                     if !cmd.aggregated_output.is_empty() {
-                        out.push(AgentUpdate::ToolCallProgress {
-                            id: id.clone(),
-                            output_chunk: cmd.aggregated_output,
-                        });
+                        out.push(tool_progress(id.clone(), cmd.aggregated_output));
                     }
                     let ok = matches!(cmd.status, CommandExecutionStatus::Completed);
                     let summary = cmd.exit_code.map(|c| format!("exit={c}"));
-                    out.push(AgentUpdate::ToolCallEnd { id, ok, summary });
+                    out.push(tool_end(id, ok, summary));
                     out
                 }
             }
@@ -90,69 +121,41 @@ fn map_item(item: ThreadItem, phase: Phase) -> Vec<AgentUpdate> {
                 .collect::<Vec<_>>()
                 .join(", ");
             match phase {
-                Phase::Started => vec![AgentUpdate::ToolCallStart {
-                    id,
-                    kind: ToolKind::FileEdit,
-                    label,
-                }],
+                Phase::Started => vec![tool_start(id, AcpToolKind::Edit, label)],
                 Phase::Updated => Vec::new(),
                 Phase::Completed => {
                     let ok = matches!(fc.status, PatchApplyStatus::Completed);
-                    vec![AgentUpdate::ToolCallEnd {
-                        id,
-                        ok,
-                        summary: None,
-                    }]
+                    vec![tool_end(id, ok, None)]
                 }
             }
         }
         ThreadItem::McpToolCall(t) => {
             if phase == Phase::Started {
-                vec![AgentUpdate::ToolCallStart {
-                    id: t.id,
-                    kind: ToolKind::Other,
-                    label: format!("mcp:{}/{}", t.server, t.tool),
-                }]
+                vec![tool_start(
+                    t.id,
+                    AcpToolKind::Other,
+                    format!("mcp:{}/{}", t.server, t.tool),
+                )]
             } else if phase == Phase::Completed {
-                vec![AgentUpdate::ToolCallEnd {
-                    id: t.id,
-                    ok: true,
-                    summary: None,
-                }]
+                vec![tool_end(t.id, true, None)]
             } else {
                 Vec::new()
             }
         }
         ThreadItem::DynamicToolCall(t) => {
             if phase == Phase::Started {
-                vec![AgentUpdate::ToolCallStart {
-                    id: t.id,
-                    kind: ToolKind::Other,
-                    label: t.tool,
-                }]
+                vec![tool_start(t.id, AcpToolKind::Other, t.tool)]
             } else if phase == Phase::Completed {
-                vec![AgentUpdate::ToolCallEnd {
-                    id: t.id,
-                    ok: true,
-                    summary: None,
-                }]
+                vec![tool_end(t.id, true, None)]
             } else {
                 Vec::new()
             }
         }
         ThreadItem::WebSearch(w) => {
             if phase == Phase::Started {
-                vec![AgentUpdate::ToolCallStart {
-                    id: w.id,
-                    kind: ToolKind::Web,
-                    label: w.query,
-                }]
+                vec![tool_start(w.id, AcpToolKind::Fetch, w.query)]
             } else if phase == Phase::Completed {
-                vec![AgentUpdate::ToolCallEnd {
-                    id: w.id,
-                    ok: true,
-                    summary: None,
-                }]
+                vec![tool_end(w.id, true, None)]
             } else {
                 Vec::new()
             }
@@ -170,14 +173,12 @@ fn map_item(item: ThreadItem, phase: Phase) -> Vec<AgentUpdate> {
                         }
                     })
                     .collect();
-                vec![AgentUpdate::Plan { steps }]
+                vec![plan_update(steps)]
             } else {
                 Vec::new()
             }
         }
         ThreadItem::Error(e) => vec![AgentUpdate::Error(e.message)],
-        // CollabToolCall, ImageView, EnteredReviewMode, ExitedReviewMode,
-        // ContextCompaction, UserMessage, Unknown — silently dropped for v1.
         _ => Vec::new(),
     }
 }

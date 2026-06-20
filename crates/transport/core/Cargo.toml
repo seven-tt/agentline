@@ -1,0 +1,24 @@
+[package]
+name = "agentline-transport"
+description = "Multi-connection ACP transport layer for agentline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[dependencies]
+agentline-bridge = { path = "../../bridge" }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+hmac = "0.12"
+sha2 = "0.10"
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

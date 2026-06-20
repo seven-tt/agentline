@@ -1,11 +1,24 @@
 use agentline_bridge::types::{
-    Attachment, AttachmentKind, Command, InboundMessage, InboundPayload, MessageKind, UserContent,
+    Attachment, AttachmentKind, Command, InboundPayload, SourceMessage, UserContent,
 };
 
 use crate::commands::parse_text;
+use crate::types::{InboundMessage, MessageKind};
 
-/// Default inbound parser for IM sources: text → command or content,
-/// media → attachments. Call this from your `InputSource::parse_message` impl.
+/// Convert a raw IM [`InboundMessage`] into a bridge-level [`SourceMessage`].
+/// This is the standard entry point for IM stream modules: construct the
+/// platform-specific `InboundMessage`, then call this to produce the type
+/// that `InputSource::start()` returns.
+pub fn parse_inbound(msg: InboundMessage) -> SourceMessage {
+    let payload = default_parse_message(&msg);
+    SourceMessage {
+        peer: msg.peer,
+        payload,
+        received_at: msg.received_at,
+    }
+}
+
+/// Parse the IM-specific [`MessageKind`] into a bridge [`InboundPayload`].
 pub fn default_parse_message(msg: &InboundMessage) -> InboundPayload {
     match &msg.kind {
         MessageKind::Text { text } => {

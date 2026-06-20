@@ -18,10 +18,14 @@
 //!
 //! See <https://moonshotai.github.io/kimi-cli/> for full docs.
 
-pub mod error;
-pub use error::{Error, Result};
+pub mod plugin;
+pub use plugin::plugin;
 
 pub use agentline_agent_acp::AcpBackend;
+
+pub mod config;
+mod parser;
+pub use parser::KimiToolCallParser;
 
 #[derive(Debug, Clone, Default)]
 pub struct KimiConfig {
@@ -59,7 +63,7 @@ fn resolve_command_args(cfg: &KimiConfig) -> (String, Vec<String>) {
 }
 
 /// Spawn a Kimi Code agent (`kimi acp`) and return a ready-to-use `AcpBackend`.
-pub async fn spawn(cfg: KimiConfig) -> Result<AcpBackend> {
+pub async fn spawn(cfg: KimiConfig) -> agentline_bridge::Result<AcpBackend> {
     let (command, args) = resolve_command_args(&cfg);
 
     let acp_cfg = agentline_agent_acp::AcpBackendConfig {
@@ -68,8 +72,12 @@ pub async fn spawn(cfg: KimiConfig) -> Result<AcpBackend> {
         extra_env: cfg.extra_env,
         remove_env: cfg.remove_env,
         pid_file: cfg.pid_file,
+        // kimi's ACP server omits tool kind/title and ships tool args as JSON
+        // text in `content`; inject kimi's own normalizer so the ACP client
+        // (and bridge) receive a standard tool kind/label.
+        parser: Some(std::sync::Arc::new(KimiToolCallParser::new())),
     };
-    Ok(AcpBackend::spawn(acp_cfg).await?)
+    AcpBackend::spawn(acp_cfg).await
 }
 
 #[cfg(test)]

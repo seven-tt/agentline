@@ -26,11 +26,14 @@
 //! [`CodexConfig::sandbox_mode`] / [`CodexConfig::approval_mode`] if you
 //! want codex to ask before destructive operations.
 
+pub mod config;
 pub mod error;
 pub mod mapping;
+pub mod plugin;
 
 pub use codex_app_server_sdk::api::{ApprovalMode, SandboxMode};
 pub use error::{Error, Result};
+pub use plugin::plugin;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -38,7 +41,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 use agentline_bridge::{
-    AgentBackend, AgentUpdate, Error as CoreError, Result as CoreResult, SessionId,
+    AgentBackend, AgentSessionId, AgentUpdate, Error as CoreError, Result as CoreResult,
 };
 use async_trait::async_trait;
 use codex_app_server_sdk::StdioConfig;
@@ -83,10 +86,10 @@ impl Default for CodexConfig {
 enum CodexCmd {
     NewSession {
         cwd: PathBuf,
-        reply: oneshot::Sender<Result<SessionId>>,
+        reply: oneshot::Sender<Result<AgentSessionId>>,
     },
     Prompt {
-        sid: SessionId,
+        sid: AgentSessionId,
         text: String,
         update_tx: mpsc::UnboundedSender<AgentUpdate>,
         ack: oneshot::Sender<Result<()>>,
@@ -95,11 +98,11 @@ enum CodexCmd {
         // TODO: codex SDK's high-level streaming API has no in-flight cancel
         // hook yet; the bridge aborts the prompt task on its side and we ack OK.
         #[allow(dead_code)]
-        sid: SessionId,
+        sid: AgentSessionId,
         reply: oneshot::Sender<Result<()>>,
     },
     CloseSession {
-        sid: SessionId,
+        sid: AgentSessionId,
         reply: oneshot::Sender<Result<()>>,
     },
 }
@@ -168,7 +171,7 @@ impl Drop for CodexBackend {
 
 #[async_trait]
 impl AgentBackend for CodexBackend {
-    async fn new_session(&self, cwd: &Path) -> CoreResult<SessionId> {
+    async fn new_session(&self, cwd: &Path) -> CoreResult<AgentSessionId> {
         let (tx, rx) = oneshot::channel();
         self.send_cmd(CodexCmd::NewSession {
             cwd: cwd.to_path_buf(),
@@ -183,14 +186,15 @@ impl AgentBackend for CodexBackend {
 
     async fn prompt<'a>(
         &'a self,
-        sid: &'a SessionId,
-        text: &'a str,
+        sid: &'a AgentSessionId,
+        content: &'a [agentline_bridge::types::ContentBlock],
     ) -> CoreResult<BoxStream<'a, AgentUpdate>> {
+        let text = agentline_bridge::types::content_to_text(content);
         let (update_tx, update_rx) = mpsc::unbounded_channel();
         let (ack_tx, ack_rx) = oneshot::channel();
         self.send_cmd(CodexCmd::Prompt {
             sid: sid.clone(),
-            text: text.to_string(),
+            text,
             update_tx,
             ack: ack_tx,
         })
@@ -203,7 +207,7 @@ impl AgentBackend for CodexBackend {
         Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(update_rx).boxed())
     }
 
-    async fn cancel(&self, sid: &SessionId) -> CoreResult<()> {
+    async fn cancel(&self, sid: &AgentSessionId) -> CoreResult<()> {
         // Codex's high-level streaming API doesn't expose an in-flight
         // cancel today; we ack OK and let the bridge abort its prompt task.
         let (tx, rx) = oneshot::channel();
@@ -218,9 +222,9 @@ impl AgentBackend for CodexBackend {
             .map_err(|e| CoreError::agent(e.to_string()))
     }
 
-    async fn answer_permission(
+    async fn respond_permission(
         &self,
-        _sid: &SessionId,
+        _sid: &AgentSessionId,
         _request_id: &str,
         _allow: bool,
     ) -> CoreResult<()> {
@@ -230,7 +234,7 @@ impl AgentBackend for CodexBackend {
         Ok(())
     }
 
-    async fn close_session(&self, sid: SessionId) -> CoreResult<()> {
+    async fn close_session(&self, sid: AgentSessionId) -> CoreResult<()> {
         let (tx, rx) = oneshot::channel();
         self.send_cmd(CodexCmd::CloseSession { sid, reply: tx })
             .await
@@ -282,9 +286,9 @@ async fn bridge_main(
     mut cmd_rx: mpsc::Receiver<CodexCmd>,
     cfg: CodexConfig,
 ) -> Result<()> {
-    let mut threads: HashMap<SessionId, Thread> = HashMap::new();
+    let mut threads: HashMap<AgentSessionId, Thread> = HashMap::new();
     let counter = AtomicU64::new(0);
-    let (return_tx, mut return_rx) = mpsc::unbounded_channel::<(SessionId, Thread)>();
+    let (return_tx, mut return_rx) = mpsc::unbounded_channel::<(AgentSessionId, Thread)>();
 
     loop {
         tokio::select! {
@@ -295,7 +299,7 @@ async fn bridge_main(
                         let opts = build_thread_options(&cfg, &cwd);
                         let thread = codex.start_thread(opts);
                         let n = counter.fetch_add(1, Ordering::SeqCst);
-                        let sid = SessionId::new(format!("codex-{n}"));
+                        let sid = AgentSessionId::new(format!("codex-{n}"));
                         threads.insert(sid.clone(), thread);
                         let _ = reply.send(Ok(sid));
                     }

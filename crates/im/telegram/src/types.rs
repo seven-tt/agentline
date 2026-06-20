@@ -13,6 +13,15 @@ pub struct ApiResponse<T> {
 pub struct Update {
     pub update_id: i64,
     pub message: Option<Message>,
+    pub callback_query: Option<CallbackQuery>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CallbackQuery {
+    pub id: String,
+    pub from: User,
+    pub message: Option<Message>,
+    pub data: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +87,19 @@ pub struct SendMessageReq {
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parse_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_markup: Option<InlineKeyboardMarkup>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InlineKeyboardMarkup {
+    pub inline_keyboard: Vec<Vec<InlineKeyboardButton>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InlineKeyboardButton {
+    pub text: String,
+    pub callback_data: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -161,6 +183,7 @@ mod tests {
             chat_id: 123,
             text: "hello".into(),
             parse_mode: None,
+            reply_markup: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"chat_id\":123"));

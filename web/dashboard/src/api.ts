@@ -77,4 +77,8 @@ export const api = {
 
   // Logs
   getLogs: () => getText('/api/logs'),
+
+  // System update
+  checkSystemUpdate: () => get<{ has_update: boolean; current: string; latest: string }>('/api/system/check-update'),
+  triggerSystemUpdate: () => post('/api/system/update'),
 }

@@ -69,7 +69,7 @@ export default {
     feishu_app_id_placeholder: '飞书应用 App ID',
     feishu_app_secret_placeholder: '飞书应用 App Secret',
     feishu_allowed_hint: '白名单 open_id 列表，逗号分隔',
-    telegram_token_placeholder: '从 @BotFather 获取的 token',
+    telegram_token_placeholder: "从 {'@'}BotFather 获取的 token",
     telegram_api_placeholder: '可选，默认使用官方 API',
   },
 
@@ -165,8 +165,10 @@ export default {
     http_proxy: 'HTTP 代理',
     https_proxy: 'HTTPS 代理',
     https_proxy_placeholder: '留空则回退到 HTTP 代理',
+    proxy_shell_hint: '留空则自动使用当前 shell 配置：{value}',
     no_proxy: 'NO_PROXY',
     no_proxy_hint: '局域网地址始终自动加入 NO_PROXY',
+    no_proxy_shell_hint: '当前 shell 配置的 NO_PROXY 也会自动合并：{value}',
     log_level: '日志级别',
     log_error: 'Error — 仅错误',
     log_warn: 'Warn — 警告以上',
@@ -193,5 +195,11 @@ export default {
 
   logs: {
     no_logs: '暂无日志',
+  },
+
+  update: {
+    available: '有新版 v{version}',
+    updating: '更新中...',
+    click_update: '点击更新',
   },
 }

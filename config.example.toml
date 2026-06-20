@@ -102,6 +102,11 @@ backend = "claude-code"   # "claude-code" | "kimi" | "qoder" | "opencode" | "kir
 # model = ""                       # Empty = codex default (e.g. gpt-5-codex)
 
 # Generic ACP backend: connect any ACP-speaking agent (custom ACP server, etc.)
+# You can define multiple custom backends with any name; set backend = "the-name" to use one.
+# Example:
+#   [agent.my-agent]
+#   command = "my-acp-server"
+#   args = ["--port", "8080"]
 [agent.acp]
 # command = "your-acp-agent"
 # args = []

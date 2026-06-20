@@ -2,7 +2,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use agentline_bridge::{Bridge, SessionRegistry};
+use agentline_bridge::{
+    AgentPluginRegistry, Bridge, CredentialInfo, CredentialUpdate, SessionRegistry,
+};
 use agentline_im_wechat::{HttpClient, request_qr, wait_for_scan};
 use axum::Router;
 use axum::extract::{Path, State};
@@ -20,11 +22,13 @@ const DASHBOARD_HTML: &str = include_str!("../templates/dashboard.html");
 #[derive(Clone)]
 pub struct Web {
     cfg: Arc<AppConfig>,
+    plugins: Arc<AgentPluginRegistry>,
     login: Arc<Mutex<LoginState>>,
     bridge_trigger: Arc<tokio::sync::Notify>,
     registry: Arc<SessionRegistry>,
     bridge: Arc<std::sync::OnceLock<Bridge>>,
     start_time: Instant,
+    log_handle: crate::LogReloadHandle,
 }
 
 #[derive(Default)]
@@ -37,9 +41,11 @@ struct LoginState {
 
 pub fn start(
     cfg: Arc<AppConfig>,
+    plugins: AgentPluginRegistry,
     bind: &str,
     bridge_trigger: Arc<tokio::sync::Notify>,
     registry: Arc<SessionRegistry>,
+    log_handle: crate::LogReloadHandle,
 ) -> (
     tokio::task::JoinHandle<()>,
     Arc<std::sync::OnceLock<Bridge>>,
@@ -48,11 +54,13 @@ pub fn start(
     let bridge_holder: Arc<std::sync::OnceLock<Bridge>> = Arc::new(std::sync::OnceLock::new());
     let app_state = Web {
         cfg,
+        plugins: Arc::new(plugins),
         login: Arc::new(Mutex::new(LoginState::default())),
         bridge_trigger,
         registry,
         bridge: bridge_holder.clone(),
         start_time: Instant::now(),
+        log_handle,
     };
 
     let router = Router::new()
@@ -84,6 +92,9 @@ pub fn start(
             get(api_settings_get).post(api_settings_set),
         )
         .route("/api/settings/restart", post(api_restart))
+        // System update
+        .route("/api/system/check-update", get(api_system_check_update))
+        .route("/api/system/update", post(api_system_update))
         // Logs
         .route("/api/logs", get(api_logs))
         .with_state(app_state);
@@ -495,12 +506,15 @@ async fn api_login_qr(State(w): State<Web>) -> Response {
 
 // ─── /api/agents ───────────────────────────────────────────────
 
+use std::collections::HashMap;
+
 #[derive(Serialize)]
 struct AgentsOut {
     backend: String,
     platform: String,
     list: Vec<AgentItem>,
-    configs: AgentConfigs,
+    credentials: HashMap<String, CredentialInfo>,
+    codex_config: CodexCfgOut,
 }
 
 #[derive(Serialize)]
@@ -512,91 +526,57 @@ struct AgentItem {
 }
 
 #[derive(Serialize)]
-struct AgentConfigs {
-    codex: CodexConfigOut,
-    qoder: QoderConfigOut,
-    opencode: OpencodeConfigOut,
-    kimi: KimiConfigOut,
-    gemini: GeminiConfigOut,
-}
-
-#[derive(Serialize)]
-struct CodexConfigOut {
+struct CodexCfgOut {
     model: String,
     sandbox_mode: String,
     approval_mode: String,
-    api_key: String,
 }
-
-#[derive(Serialize)]
-struct QoderConfigOut {
-    personal_access_token: String,
-}
-
-#[derive(Serialize)]
-struct OpencodeConfigOut {
-    base_url: String,
-    api_key: String,
-}
-
-#[derive(Serialize)]
-struct KimiConfigOut {
-    access_token: String,
-}
-
-#[derive(Serialize)]
-struct GeminiConfigOut {
-    api_key: String,
-}
-
-use crate::agents::{AGENTS, detect_agent};
 
 async fn api_agents(State(w): State<Web>) -> axum::Json<AgentsOut> {
     let cfg = reload_cfg(&w);
-    let list: Vec<AgentItem> = AGENTS
+    let list: Vec<AgentItem> = w
+        .plugins
         .iter()
-        .map(|meta| {
-            let (installed, version) = detect_agent(meta.cli_cmd);
+        .map(|p| {
+            let (installed, version) = p.detect();
+            let status = if !installed {
+                "not_installed"
+            } else if p.auth_status() == agentline_bridge::AuthStatus::Ready {
+                "ready"
+            } else {
+                "needs_login"
+            };
             AgentItem {
-                id: meta.id.to_string(),
+                id: p.id().to_string(),
                 installed,
                 version,
-                status: meta.status(installed, &cfg.agent).to_string(),
+                status: status.to_string(),
             }
         })
+        .collect();
+
+    let credentials: HashMap<String, CredentialInfo> = w
+        .plugins
+        .iter()
+        .map(|p| (p.id().to_string(), p.read_credential()))
         .collect();
 
     axum::Json(AgentsOut {
         backend: cfg.agent.backend.clone(),
         platform: std::env::consts::OS.to_string(),
         list,
-        configs: AgentConfigs {
-            codex: CodexConfigOut {
-                model: cfg.agent.codex.model.clone(),
-                sandbox_mode: if cfg.agent.codex.sandbox_mode.is_empty() {
-                    "workspace-write".to_string()
-                } else {
-                    cfg.agent.codex.sandbox_mode.clone()
-                },
-                approval_mode: if cfg.agent.codex.approval_mode.is_empty() {
-                    "never".to_string()
-                } else {
-                    cfg.agent.codex.approval_mode.clone()
-                },
-                api_key: cfg.agent.codex.api_key.clone(),
+        credentials,
+        codex_config: CodexCfgOut {
+            model: cfg.agent.codex.model.clone(),
+            sandbox_mode: if cfg.agent.codex.sandbox_mode.is_empty() {
+                "workspace-write".to_string()
+            } else {
+                cfg.agent.codex.sandbox_mode.clone()
             },
-            qoder: QoderConfigOut {
-                personal_access_token: cfg.agent.qoder.personal_access_token.clone(),
-            },
-            opencode: OpencodeConfigOut {
-                base_url: cfg.agent.opencode.base_url.clone(),
-                api_key: cfg.agent.opencode.api_key.clone(),
-            },
-            kimi: KimiConfigOut {
-                access_token: cfg.agent.kimi.access_token.clone(),
-            },
-            gemini: GeminiConfigOut {
-                api_key: cfg.agent.gemini.api_key.clone(),
+            approval_mode: if cfg.agent.codex.approval_mode.is_empty() {
+                "never".to_string()
+            } else {
+                cfg.agent.codex.approval_mode.clone()
             },
         },
     })
@@ -605,40 +585,15 @@ async fn api_agents(State(w): State<Web>) -> axum::Json<AgentsOut> {
 #[derive(Deserialize)]
 struct AgentConfigIn {
     backend: Option<String>,
-    codex: Option<CodexConfigIn>,
-    qoder: Option<QoderConfigIn>,
-    opencode: Option<OpencodeConfigIn>,
-    kimi: Option<KimiConfigIn>,
-    gemini: Option<GeminiConfigIn>,
+    credentials: Option<HashMap<String, CredentialUpdate>>,
+    codex: Option<CodexCfgIn>,
 }
 
 #[derive(Deserialize)]
-struct CodexConfigIn {
+struct CodexCfgIn {
     model: Option<String>,
     sandbox_mode: Option<String>,
     approval_mode: Option<String>,
-    api_key: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct QoderConfigIn {
-    personal_access_token: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct OpencodeConfigIn {
-    base_url: Option<String>,
-    api_key: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct KimiConfigIn {
-    access_token: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct GeminiConfigIn {
-    api_key: Option<String>,
 }
 
 async fn api_agents_config(
@@ -665,32 +620,13 @@ async fn api_agents_config(
         if let Some(ref v) = c.approval_mode {
             updated = set_toml_key(&updated, "agent.codex", "approval_mode", v);
         }
-        if let Some(ref v) = c.api_key {
-            updated = set_toml_key(&updated, "agent.codex", "api_key", v);
+    }
+    if let Some(ref creds) = body.credentials {
+        for (agent_id, update) in creds {
+            if let Some(plugin) = w.plugins.iter().find(|p| p.id() == agent_id.as_str()) {
+                plugin.sync_credential(update);
+            }
         }
-    }
-    if let Some(ref q) = body.qoder
-        && let Some(ref v) = q.personal_access_token
-    {
-        updated = set_toml_key(&updated, "agent.qoder", "personal_access_token", v);
-    }
-    if let Some(ref o) = body.opencode {
-        if let Some(ref v) = o.base_url {
-            updated = set_toml_key(&updated, "agent.opencode", "base_url", v);
-        }
-        if let Some(ref v) = o.api_key {
-            updated = set_toml_key(&updated, "agent.opencode", "api_key", v);
-        }
-    }
-    if let Some(ref k) = body.kimi
-        && let Some(ref v) = k.access_token
-    {
-        updated = set_toml_key(&updated, "agent.kimi", "access_token", v);
-    }
-    if let Some(ref g) = body.gemini
-        && let Some(ref v) = g.api_key
-    {
-        updated = set_toml_key(&updated, "agent.gemini", "api_key", v);
     }
 
     if let Err(e) = std::fs::write(&path, &updated) {
@@ -712,12 +648,12 @@ async fn api_agents_install(
     Path(id): Path<String>,
     State(w): State<Web>,
 ) -> axum::Json<InstallResult> {
-    let meta = AGENTS.iter().find(|m| m.id == id.as_str());
-    let args = meta.and_then(|m| m.install);
+    let plugin = w.plugins.iter().find(|p| p.id() == id.as_str());
+    let args = plugin.and_then(|p| p.install_command());
     let Some(args) = args else {
         return axum::Json(InstallResult {
             success: false,
-            error: Some(format!("unknown agent: {id}")),
+            error: Some(format!("unknown agent or no installer: {id}")),
         });
     };
 
@@ -764,6 +700,9 @@ async fn api_agents_install(
     match result {
         Ok(Ok(output)) if output.status.success() => {
             tracing::info!(agent = %id, "agent installed successfully");
+            if let Some(p) = plugin {
+                p.post_install();
+            }
             axum::Json(InstallResult {
                 success: true,
                 error: None,
@@ -803,14 +742,12 @@ struct CheckUpdateResult {
     has_update: bool,
 }
 
-async fn api_agents_check_update(Path(id): Path<String>) -> axum::Json<CheckUpdateResult> {
-    let cmd = AGENTS
-        .iter()
-        .find(|m| m.id == id.as_str())
-        .map(|m| m.cli_cmd)
-        .unwrap_or("");
-
-    let (installed, current) = detect_agent(cmd);
+async fn api_agents_check_update(
+    Path(id): Path<String>,
+    State(w): State<Web>,
+) -> axum::Json<CheckUpdateResult> {
+    let plugin = w.plugins.iter().find(|p| p.id() == id.as_str());
+    let (installed, current) = plugin.map(|p| p.detect()).unwrap_or((false, None));
     if !installed {
         return axum::Json(CheckUpdateResult {
             current: None,
@@ -883,6 +820,9 @@ struct SettingsOut {
     bridge: BridgeSettingsOut,
     web: WebSettingsOut,
     proxy: ProxySettingsOut,
+    /// Detected from the env / login shell (.zshrc, .bashrc, ...) — what
+    /// `proxy` above falls back to when a field is left empty. Display only.
+    shell_proxy: ProxySettingsOut,
     log: LogSettingsOut,
 }
 
@@ -925,6 +865,14 @@ async fn api_settings_get(State(w): State<Web>) -> axum::Json<SettingsOut> {
             http: cfg.proxy.http.clone(),
             https: cfg.proxy.https.clone(),
             no_proxy: cfg.proxy.no_proxy.clone(),
+        },
+        shell_proxy: {
+            let shell = agentline_bridge::proxy::detect_shell_proxy();
+            ProxySettingsOut {
+                http: shell.http.clone(),
+                https: shell.https.clone(),
+                no_proxy: shell.no_proxy.clone(),
+            }
         },
         log: LogSettingsOut {
             level: cfg.log.level.clone(),
@@ -1011,6 +959,8 @@ async fn api_settings_set(
         && let Some(ref v) = l.level
     {
         updated = set_toml_key(&updated, "log", "level", v);
+        // Apply immediately — no daemon restart needed just to change verbosity.
+        w.log_handle.set_level(v);
     }
 
     if let Err(e) = std::fs::write(&path, &updated) {
@@ -1309,4 +1259,198 @@ async fn run_login(
         g.qr_login_url = None;
     }
     bridge_trigger.notify_one();
+}
+
+// ─── /api/system/check-update & update ────────────────────────
+
+const GITHUB_RELEASES_API: &str = "https://api.github.com/repos/seven-tt/agentline/releases/latest";
+
+#[derive(Serialize)]
+struct SystemUpdateOut {
+    has_update: bool,
+    current: &'static str,
+    latest: String,
+}
+
+async fn api_system_check_update(State(_w): State<Web>) -> axum::Json<SystemUpdateOut> {
+    let current = env!("CARGO_PKG_VERSION");
+    match fetch_latest_version().await {
+        Some(tag) => {
+            let has = is_newer_version(&tag, current);
+            axum::Json(SystemUpdateOut {
+                has_update: has,
+                current,
+                latest: tag.trim_start_matches('v').to_string(),
+            })
+        }
+        None => axum::Json(SystemUpdateOut {
+            has_update: false,
+            current,
+            latest: current.to_string(),
+        }),
+    }
+}
+
+async fn api_system_update(State(_w): State<Web>) -> Response {
+    let current = env!("CARGO_PKG_VERSION");
+
+    let info = match fetch_release_info().await {
+        Some(info) if is_newer_version(&info.tag, current) => info,
+        _ => {
+            return (StatusCode::OK, "already up to date").into_response();
+        }
+    };
+
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = do_system_update(&info) {
+            tracing::error!(error=%e, "system update failed");
+        }
+    });
+
+    (StatusCode::ACCEPTED, "updating").into_response()
+}
+
+struct ReleaseDownloadInfo {
+    tag: String,
+    asset_url: String,
+}
+
+async fn fetch_latest_version() -> Option<String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(GITHUB_RELEASES_API)
+        .header("User-Agent", "agentline")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+    json.get("tag_name")?.as_str().map(|s| s.to_string())
+}
+
+async fn fetch_release_info() -> Option<ReleaseDownloadInfo> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(GITHUB_RELEASES_API)
+        .header("User-Agent", "agentline")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let tag = json.get("tag_name")?.as_str()?.to_string();
+
+    let target = if cfg!(target_arch = "aarch64") {
+        "aarch64-apple-darwin"
+    } else {
+        "x86_64-apple-darwin"
+    };
+
+    let assets = json.get("assets")?.as_array()?;
+    let asset_url = assets.iter().find_map(|a| {
+        let name = a.get("name")?.as_str()?;
+        if name.contains(target) && name.ends_with(".zip") {
+            a.get("browser_download_url")?
+                .as_str()
+                .map(|s| s.to_string())
+        } else {
+            None
+        }
+    })?;
+
+    Some(ReleaseDownloadInfo { tag, asset_url })
+}
+
+fn is_newer_version(remote_tag: &str, local: &str) -> bool {
+    let parse = |v: &str| -> Vec<u64> {
+        v.trim_start_matches('v')
+            .split('.')
+            .filter_map(|s| s.parse().ok())
+            .collect()
+    };
+    let r = parse(remote_tag);
+    let l = parse(local);
+    for i in 0..3 {
+        let rv = r.get(i).copied().unwrap_or(0);
+        let lv = l.get(i).copied().unwrap_or(0);
+        if rv > lv {
+            return true;
+        }
+        if rv < lv {
+            return false;
+        }
+    }
+    false
+}
+
+fn do_system_update(info: &ReleaseDownloadInfo) -> anyhow::Result<()> {
+    use std::process::Command;
+
+    let tmp_zip = std::path::Path::new("/tmp/agentline-update.zip");
+    let tmp_dir = std::path::Path::new("/tmp/agentline-update");
+
+    let _ = std::fs::remove_file(tmp_zip);
+    let _ = std::fs::remove_dir_all(tmp_dir);
+
+    tracing::info!(tag=%info.tag, "downloading update");
+    let status = Command::new("curl")
+        .args(["-fsSL", "-o", "/tmp/agentline-update.zip", &info.asset_url])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("download failed");
+    }
+
+    tracing::info!("extracting update");
+    std::fs::create_dir_all(tmp_dir)?;
+    let status = Command::new("unzip")
+        .args([
+            "-o",
+            "/tmp/agentline-update.zip",
+            "-d",
+            "/tmp/agentline-update",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("unzip failed");
+    }
+
+    let extracted_app = tmp_dir.join("AgentlineTray.app");
+    if !extracted_app.exists() {
+        anyhow::bail!("AgentlineTray.app not found in zip");
+    }
+
+    let current_exe = std::env::current_exe()?;
+    let current_app = current_exe
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .ok_or_else(|| anyhow::anyhow!("cannot determine .app path"))?;
+
+    let app_parent = current_app
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("no parent of .app"))?;
+    let app_name = current_app
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("no .app filename"))?
+        .to_owned();
+
+    let backup = app_parent.join("AgentlineTray.app.bak");
+    let _ = std::fs::remove_dir_all(&backup);
+    std::fs::rename(current_app, &backup)?;
+    if let Err(e) = std::fs::rename(&extracted_app, app_parent.join(&app_name)) {
+        let _ = std::fs::rename(&backup, current_app);
+        return Err(e.into());
+    }
+    let _ = std::fs::remove_dir_all(&backup);
+    let _ = std::fs::remove_file(tmp_zip);
+    let _ = std::fs::remove_dir_all(tmp_dir);
+
+    tracing::info!("update installed, restarting");
+    let new_exe = app_parent
+        .join(&app_name)
+        .join("Contents/MacOS/agentline-tray");
+    let _ = Command::new(new_exe).spawn();
+    std::process::exit(0);
 }

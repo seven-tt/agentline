@@ -1,6 +1,7 @@
-use crate::permission::PendingPerm;
-use crate::session::{SessionKey, SessionManager};
-use crate::types::{ElicitField, PeerRef, SessionId};
+use crate::permission::PendingPermissionRequest;
+use crate::session::SessionManager;
+use crate::types::{AgentSessionId, ContentBlock, PeerRef, SessionId};
+use agent_client_protocol::ElicitationSchema;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
@@ -9,19 +10,18 @@ use std::path::PathBuf;
 pub struct BridgeState {
     pub cwd: PathBuf,
     pub sessions: SessionManager,
-    pub pending_perms: HashMap<SessionKey, PendingPerm>,
-    pub pending_elicits: HashMap<SessionKey, PendingElicit>,
+    pub pending_perms: HashMap<SessionId, PendingPermissionRequest>,
+    pub pending_elicits: HashMap<SessionId, PendingElicit>,
     /// When `/yolo` is sent before a session exists, the intent is stored here
     /// and applied to the next session created.  Cleared by `/new`.
     pub pending_yolo: bool,
     /// Prompts that arrived while another prompt_task was still running.
     /// Dequeued automatically when the current turn finishes.
-    /// Tuple: (session_key, peer, text, source_id).
-    pub pending_prompts: VecDeque<(SessionKey, PeerRef, String, String)>,
+    pub pending_prompts: VecDeque<(SessionId, Vec<ContentBlock>)>,
     /// Current agent backend name (mutable via `/agent`).
     pub agent_name: String,
     /// Which session's prompt is currently executing, if any.
-    pub running_session: Option<SessionKey>,
+    pub running_session: Option<SessionId>,
 }
 
 impl BridgeState {
@@ -41,8 +41,8 @@ impl BridgeState {
 
 #[derive(Debug)]
 pub struct PendingElicit {
-    pub session_id: SessionId,
+    pub agent_session_id: AgentSessionId,
     pub elicit_id: String,
     pub peer: PeerRef,
-    pub schema: Option<Vec<ElicitField>>,
+    pub schema: Option<ElicitationSchema>,
 }

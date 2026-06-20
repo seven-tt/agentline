@@ -1,35 +1,47 @@
 use crate::permission::PermissionPolicy;
-use crate::types::{PeerRef, SessionId};
+use crate::types::{AgentSessionId, PeerRef, SessionId};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime};
 
-/// Session key: identifies a unique conversation context.
-/// Private chat = (source_id, user_id, None).
-/// Group chat = (source_id, user_id, Some(group_id)).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SessionKey {
+/// A channel through which a session is reachable: which input source it
+/// belongs to and which IM-side peer to deliver outbound updates to.
+///
+/// A session may be bound to more than one channel — the same conversation
+/// can be visible from multiple message channels. Outbound updates are
+/// mirrored to every binding.
+#[derive(Debug, Clone)]
+pub struct ChannelBinding {
     pub source_id: String,
-    pub user_id: String,
-    pub group_id: Option<String>,
-}
-
-impl SessionKey {
-    pub fn new(source_id: impl Into<String>, peer: &PeerRef) -> Self {
-        Self {
-            source_id: source_id.into(),
-            user_id: peer.user_id.clone(),
-            group_id: peer.group_id.clone(),
-        }
-    }
-}
-
-/// Per-session state, keyed by SessionKey.
-#[derive(Debug)]
-pub struct ManagedSession {
     pub peer: PeerRef,
+}
+
+/// Generate a fresh external session id (ACP routing id). Process-unique:
+/// monotonic counter mixed with a wall-clock nanosecond stamp.
+pub fn gen_session_id() -> SessionId {
+    static SESSION_SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    SessionId::new(format!("sess-{nanos:x}-{n:x}"))
+}
+
+/// Per-session state, keyed by the external [`SessionId`].
+#[derive(Debug)]
+pub struct Session {
+    /// External ACP routing id (the map key). Stable across agent-subprocess
+    /// recycling, so clients can hold onto it.
+    pub id: SessionId,
+    /// Channels this session is reachable from. Outbound updates are mirrored
+    /// to all of them. Always has at least one (the creation channel).
+    pub bindings: Vec<ChannelBinding>,
     pub cwd: PathBuf,
-    pub session_id: SessionId,
+    /// Agent-subprocess session id (from `AgentBackend::new_session`). May be
+    /// re-created internally on idle-expiry without changing [`Session::id`].
+    pub agent_session_id: AgentSessionId,
     pub short_id: u32,
     pub agent_name: String,
     pub created_at: SystemTime,
@@ -40,16 +52,21 @@ pub struct ManagedSession {
     pub project_context_sent: bool,
 }
 
-impl ManagedSession {
+impl Session {
     pub fn tag(&self) -> String {
         format!("[#{} {}]", self.short_id, self.agent_name)
     }
+
+    /// The primary (creation) channel binding.
+    pub fn primary(&self) -> &ChannelBinding {
+        &self.bindings[0]
+    }
 }
 
-/// Manages multiple concurrent sessions keyed by (source_id, user_id, group_id).
+/// Manages multiple concurrent sessions keyed by external [`SessionId`].
 #[derive(Debug)]
 pub struct SessionManager {
-    sessions: HashMap<SessionKey, ManagedSession>,
+    sessions: HashMap<SessionId, Session>,
     counter: u32,
 }
 
@@ -66,23 +83,23 @@ impl SessionManager {
         self.counter
     }
 
-    pub fn get(&self, key: &SessionKey) -> Option<&ManagedSession> {
-        self.sessions.get(key)
+    pub fn get(&self, id: &SessionId) -> Option<&Session> {
+        self.sessions.get(id)
     }
 
-    pub fn get_mut(&mut self, key: &SessionKey) -> Option<&mut ManagedSession> {
-        self.sessions.get_mut(key)
+    pub fn get_mut(&mut self, id: &SessionId) -> Option<&mut Session> {
+        self.sessions.get_mut(id)
     }
 
-    pub fn insert(&mut self, key: SessionKey, session: ManagedSession) {
-        self.sessions.insert(key, session);
+    pub fn insert(&mut self, id: SessionId, session: Session) {
+        self.sessions.insert(id, session);
     }
 
-    pub fn remove(&mut self, key: &SessionKey) -> Option<ManagedSession> {
-        self.sessions.remove(key)
+    pub fn remove(&mut self, id: &SessionId) -> Option<Session> {
+        self.sessions.remove(id)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&SessionKey, &ManagedSession)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&SessionId, &Session)> {
         self.sessions.iter()
     }
 
@@ -94,7 +111,7 @@ impl SessionManager {
         self.sessions.is_empty()
     }
 
-    pub fn drain(&mut self) -> impl Iterator<Item = (SessionKey, ManagedSession)> + '_ {
+    pub fn drain(&mut self) -> impl Iterator<Item = (SessionId, Session)> + '_ {
         self.sessions.drain()
     }
 }
@@ -106,27 +123,20 @@ impl Default for SessionManager {
 }
 
 pub fn format_timestamp() -> String {
-    use std::time::SystemTime;
-    let secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let z = secs as i64 / 86400 + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    let time = secs % 86400;
-    let h = time / 3600;
-    let min = (time % 3600) / 60;
-    let s = time % 60;
-    format!("{y:04}{m:02}{d:02}-{h:02}{min:02}{s:02}")
+    use time::OffsetDateTime;
+    // Falls back to UTC only if the OS local offset can't be determined
+    // (e.g. certain sandboxed/multi-threaded edge cases the `time` crate
+    // refuses to trust) — session dirs should reflect the user's wall clock.
+    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    format!(
+        "{:04}{:02}{:02}-{:02}{:02}{:02}",
+        now.year(),
+        u8::from(now.month()),
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second()
+    )
 }
 
 pub fn cleanup_old_sessions(base: &std::path::Path, keep: usize) {

@@ -1,5 +1,7 @@
 use crate::error::{Error, Result};
-use crate::types::{EditMessageTextReq, SendChatActionReq, SendMessageReq, SendMessageResp};
+use crate::types::{
+    EditMessageTextReq, InlineKeyboardMarkup, SendChatActionReq, SendMessageReq, SendMessageResp,
+};
 use std::time::Duration;
 
 pub async fn send_message(
@@ -8,12 +10,26 @@ pub async fn send_message(
     token: &str,
     chat_id: i64,
     text: &str,
+    parse_mode: Option<&str>,
+) -> Result<i64> {
+    send_message_with_markup(http, api_base, token, chat_id, text, parse_mode, None).await
+}
+
+pub async fn send_message_with_markup(
+    http: &reqwest::Client,
+    api_base: &str,
+    token: &str,
+    chat_id: i64,
+    text: &str,
+    parse_mode: Option<&str>,
+    reply_markup: Option<InlineKeyboardMarkup>,
 ) -> Result<i64> {
     let url = format!("{api_base}/bot{token}/sendMessage");
     let body = SendMessageReq {
         chat_id,
         text: text.to_string(),
-        parse_mode: None,
+        parse_mode: parse_mode.map(String::from),
+        reply_markup,
     };
     let resp = http
         .post(&url)
@@ -25,6 +41,23 @@ pub async fn send_message(
     parse_send_response(resp).await
 }
 
+pub async fn answer_callback_query(
+    http: &reqwest::Client,
+    api_base: &str,
+    token: &str,
+    callback_query_id: &str,
+) -> Result<()> {
+    let url = format!("{api_base}/bot{token}/answerCallbackQuery");
+    let body = serde_json::json!({ "callback_query_id": callback_query_id });
+    let _ = http
+        .post(&url)
+        .timeout(Duration::from_secs(10))
+        .json(&body)
+        .send()
+        .await;
+    Ok(())
+}
+
 pub async fn edit_message_text(
     http: &reqwest::Client,
     api_base: &str,
@@ -32,13 +65,14 @@ pub async fn edit_message_text(
     chat_id: i64,
     message_id: i64,
     text: &str,
+    parse_mode: Option<&str>,
 ) -> Result<()> {
     let url = format!("{api_base}/bot{token}/editMessageText");
     let body = EditMessageTextReq {
         chat_id,
         message_id,
         text: text.to_string(),
-        parse_mode: None,
+        parse_mode: parse_mode.map(String::from),
     };
     let resp = http
         .post(&url)
@@ -104,4 +138,16 @@ async fn parse_send_response(resp: reqwest::Response) -> Result<i64> {
         ));
     }
     Ok(parsed.result.map(|r| r.message_id).unwrap_or(0))
+}
+
+/// Escape text for safe inclusion in HTML parse_mode messages.
+pub fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Convert standard Markdown to Telegram MarkdownV2.
+pub fn md_to_telegram_mdv2(md: &str) -> String {
+    telegramify_markdown::convert(md)
 }

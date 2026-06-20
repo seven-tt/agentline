@@ -1,16 +1,7 @@
 use crate::config::{AppConfig, ProxySection};
 use crate::state::{AppState, FileCursorPersist};
-use agentline_agent_acp::{AcpBackend, AcpBackendConfig};
-use agentline_agent_claude_code::{ClaudeCodeConfig, spawn as spawn_claude_code};
-use agentline_agent_codex::{ApprovalMode, CodexBackend, CodexConfig, SandboxMode};
-use agentline_agent_gemini::{GeminiConfig, spawn as spawn_gemini};
-use agentline_agent_hermes::{HermesConfig, spawn as spawn_hermes};
-use agentline_agent_kimi::{KimiConfig, spawn as spawn_kimi};
-use agentline_agent_kiro::{KiroConfig, spawn as spawn_kiro};
-use agentline_agent_opencode::{OpencodeConfig, spawn as spawn_opencode};
-use agentline_agent_qoder::{QoderConfig, spawn as spawn_qoder};
 use agentline_bridge::{
-    AgentBackend, AgentFactory, AgentInfo, AgentStatus, Bridge, BridgeConfig, SessionRegistry,
+    AgentBackend, AgentFactory, Bridge, BridgeConfig, PluginAgentFactory, SessionRegistry,
     SourceRouter,
 };
 use agentline_im_dingtalk::{DingtalkChannel, OpenParams, StreamConfig};
@@ -18,11 +9,14 @@ use agentline_im_feishu::{FeishuChannel, FeishuConfig};
 use agentline_im_telegram::{TelegramChannel, TelegramConfig};
 use agentline_im_wechat::{HttpClient, WechatChannel};
 use anyhow::{Context, Result, anyhow, bail};
-use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub async fn run(cfg: AppConfig) -> Result<()> {
+pub async fn run(cfg: AppConfig, acp: bool, log_handle: crate::LogReloadHandle) -> Result<()> {
+    if acp {
+        return run_acp(cfg).await;
+    }
+
     // Single-instance guard: refuse to start if another daemon already holds
     // the lock. Without this, a tray respawn bug (or a stray manual launch)
     // can leave two daemons both polling the same IM token → every message is
@@ -36,9 +30,11 @@ pub async fn run(cfg: AppConfig) -> Result<()> {
         let cfg_for_web = std::sync::Arc::new(cfg.clone());
         let (_handle, holder) = crate::web::start(
             cfg_for_web,
+            build_plugin_registry(),
             &cfg.web.bind,
             std::sync::Arc::clone(&bridge_trigger),
             Arc::clone(&registry),
+            log_handle,
         );
         Some(holder)
     } else {
@@ -107,8 +103,19 @@ async fn try_run_bridge(
         bail!("no IM backend enabled — set enable = true in at least one [im.*] section");
     }
 
-    let agent: Arc<dyn AgentBackend> = build_agent(cfg).await?;
-    let agent_factory: Arc<dyn AgentFactory> = Arc::new(RuntimeAgentFactory { cfg: cfg.clone() });
+    let plugins = build_plugin_registry();
+    let agent_section: toml::Value = toml::Value::try_from(&cfg.agent)
+        .unwrap_or_else(|_| toml::Value::Table(Default::default()));
+    let factory = Arc::new(PluginAgentFactory::new(
+        plugins,
+        proxy_env(&cfg.proxy),
+        Some(agent_pid_path(cfg)),
+        agent_section,
+    ));
+    let agent: Arc<dyn AgentBackend> = factory
+        .build(&cfg.agent.backend)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
 
     let (default_cwd, session_base_dir) = if cfg.bridge.default_cwd.trim().is_empty() {
         let state_dir = crate::config::expand_tilde(&cfg.bridge.state_dir);
@@ -184,7 +191,10 @@ async fn try_run_bridge(
     if let Some(ref holder) = web_bridge {
         let _ = holder.set(bridge.clone());
     }
-    let _bridge = bridge.with_agent_factory(agent_factory.clone());
+    // Start transport listeners (unix socket, iroh).
+    let _transport_handles = start_transports(cfg, &bridge)?;
+
+    let _bridge = bridge.with_agent_factory(factory.clone());
 
     tracing::info!(
         cwd = %default_cwd.display(),
@@ -210,22 +220,99 @@ async fn try_run_bridge(
     Ok(())
 }
 
-async fn build_agent(cfg: &AppConfig) -> Result<Arc<dyn AgentBackend>> {
-    match cfg.agent.backend.as_str() {
-        "claude-code" => Ok(Arc::new(build_claude_code(cfg).await?)),
-        "kimi" => Ok(Arc::new(build_kimi(cfg).await?)),
-        "qoder" => Ok(Arc::new(build_qoder(cfg).await?)),
-        "opencode" => Ok(Arc::new(build_opencode(cfg).await?)),
-        "kiro" => Ok(Arc::new(build_kiro(cfg).await?)),
-        "gemini" => Ok(Arc::new(build_gemini(cfg).await?)),
-        "hermes" => Ok(Arc::new(build_hermes(cfg).await?)),
-        "codex" => Ok(Arc::new(build_codex(cfg).await?)),
-        "acp" => Ok(Arc::new(build_generic_acp(cfg).await?)),
-        other => bail!(
-            "agent.backend = {:?}: unsupported (try `claude-code`, `kimi`, `qoder`, `opencode`, `kiro`, `gemini`, `hermes`, `codex`, or `acp`)",
-            other
-        ),
+async fn run_acp(cfg: AppConfig) -> Result<()> {
+    use agentline_bridge::acp_server::{AcpSource, serve_acp};
+
+    rust_i18n::set_locale(&cfg.bridge.locale);
+
+    agentline_agent_acp::cleanup_orphaned_agent(&agent_pid_path(&cfg));
+
+    let plugins = build_plugin_registry();
+    let agent_section: toml::Value = toml::Value::try_from(&cfg.agent)
+        .unwrap_or_else(|_| toml::Value::Table(Default::default()));
+    let factory = Arc::new(PluginAgentFactory::new(
+        plugins,
+        proxy_env(&cfg.proxy),
+        Some(agent_pid_path(&cfg)),
+        agent_section,
+    ));
+    let agent: Arc<dyn AgentBackend> = factory
+        .build(&cfg.agent.backend)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
+
+    let default_cwd = if cfg.bridge.default_cwd.trim().is_empty() {
+        let state_dir = crate::config::expand_tilde(&cfg.bridge.state_dir);
+        state_dir.join("agents").join(&cfg.agent.backend)
+    } else {
+        cfg.resolved_cwd()
+    };
+    if let Err(e) = std::fs::create_dir_all(&default_cwd) {
+        tracing::error!(error=%e, cwd=%default_cwd.display(), "could not create default working dir");
     }
+
+    let router = SourceRouter::new();
+    let (source, out_rx) = AcpSource::new();
+    router.register_source(source.clone());
+
+    let bridge_cfg = BridgeConfig {
+        default_cwd,
+        typing_interval: Duration::from_secs(30),
+        session_idle_timeout: Duration::from_secs(cfg.bridge.session_idle_timeout_secs),
+        agent_name: cfg.agent.backend.clone(),
+        projects: vec![],
+        session_base_dir: None,
+        registry: None,
+        config_path: cfg.config_path.clone(),
+    };
+
+    let (bridge, actor_handle) = Bridge::from_router(
+        router,
+        agent.clone(),
+        bridge_cfg,
+        std::sync::Arc::new(agentline_im_core::ImInboundHandler::new()),
+    );
+    let _bridge = bridge.clone().with_agent_factory(factory);
+
+    tracing::info!(agent = %cfg.agent.backend, "agentline ACP server starting on stdio");
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            tokio::select! {
+                result = serve_acp(
+                    bridge,
+                    source,
+                    out_rx,
+                    tokio::io::stdin(),
+                    tokio::io::stdout(),
+                ) => {
+                    if let Err(e) = result {
+                        tracing::error!(error=%e, "ACP server error");
+                    }
+                }
+                _ = actor_handle => {
+                    tracing::info!("bridge actor exited");
+                }
+            }
+            agent.shutdown().await;
+        })
+        .await;
+    Ok(())
+}
+
+fn build_plugin_registry() -> agentline_bridge::AgentPluginRegistry {
+    vec![
+        agentline_agent_claude_code::plugin(),
+        agentline_agent_kimi::plugin(),
+        agentline_agent_qoder::plugin(),
+        agentline_agent_opencode::plugin(),
+        agentline_agent_kiro::plugin(),
+        agentline_agent_gemini::plugin(),
+        agentline_agent_hermes::plugin(),
+        agentline_agent_codex::plugin(),
+        agentline_agent_acp::plugin(),
+    ]
 }
 
 /// Build an IM adapter implementing InputSource + ImAdapter for the new
@@ -237,7 +324,7 @@ async fn build_im_source(
 ) -> Result<Arc<dyn agentline_bridge::ImAdapter>> {
     match name {
         "wechat" => build_wechat_source(cfg).await,
-        "dingtalk" => build_dingtalk_source(cfg),
+        "dingtalk" => build_dingtalk_source(cfg).await,
         "feishu" => build_feishu_source(cfg).await,
         "telegram" => build_telegram_source(cfg),
         other => bail!(
@@ -247,7 +334,7 @@ async fn build_im_source(
     }
 }
 
-fn build_dingtalk_source(cfg: &AppConfig) -> Result<Arc<dyn agentline_bridge::ImAdapter>> {
+async fn build_dingtalk_source(cfg: &AppConfig) -> Result<Arc<dyn agentline_bridge::ImAdapter>> {
     if cfg.im.dingtalk.client_id.is_empty() || cfg.im.dingtalk.client_secret.is_empty() {
         bail!(
             "dingtalk requires `im.dingtalk.client_id` and `im.dingtalk.client_secret` in config"
@@ -261,8 +348,11 @@ fn build_dingtalk_source(cfg: &AppConfig) -> Result<Arc<dyn agentline_bridge::Im
         },
         allowed_users: cfg.im.dingtalk.allowed_users.clone(),
         buffer: 32,
+        card_template_id: cfg.im.dingtalk.card_template_id.clone(),
     };
-    let channel = DingtalkChannel::new(stream_cfg).map_err(|e| anyhow!("dingtalk: {e}"))?;
+    let channel = DingtalkChannel::new(stream_cfg)
+        .await
+        .map_err(|e| anyhow!("dingtalk: {e}"))?;
     Ok(Arc::new(channel))
 }
 
@@ -274,6 +364,7 @@ fn build_telegram_source(cfg: &AppConfig) -> Result<Arc<dyn agentline_bridge::Im
         bot_token: cfg.im.telegram.bot_token.clone(),
         allowed_users: cfg.im.telegram.allowed_users.clone(),
         api_base: cfg.im.telegram.api_base.clone(),
+        proxy: resolve_https_proxy(&cfg.proxy),
     };
     let channel = TelegramChannel::new(tg_cfg).map_err(|e| anyhow!("telegram: {e}"))?;
     Ok(Arc::new(channel))
@@ -348,359 +439,97 @@ fn agent_pid_path(cfg: &AppConfig) -> std::path::PathBuf {
     crate::config::expand_tilde(&cfg.bridge.state_dir).join("agent.pid")
 }
 
-async fn build_claude_code(cfg: &AppConfig) -> Result<AcpBackend> {
-    let cc = &cfg.agent.claude_code;
-    let mut conf = ClaudeCodeConfig::default();
-    if !cc.version.is_empty() {
-        conf.version = cc.version.clone();
+fn start_transports(cfg: &AppConfig, bridge: &Bridge) -> Result<Vec<std::thread::JoinHandle<()>>> {
+    let mut handles = Vec::new();
+    let token = if cfg.transport.token.is_empty() {
+        None
+    } else {
+        Some(cfg.transport.token.clone())
+    };
+    let cwd = bridge.config().default_cwd.clone();
+
+    if !cfg.transport.unix_socket.is_empty() {
+        let path = crate::config::expand_tilde(&cfg.transport.unix_socket);
+        let listener = agentline_transport::UnixSocketListener::bind(&path)
+            .map_err(|e| anyhow!("unix transport: {e}"))?;
+        handles.push(agentline_transport::spawn_transport(
+            bridge.clone(),
+            std::sync::Arc::new(listener),
+            token.clone(),
+            cwd.clone(),
+        ));
     }
-    if !cc.command.is_empty() {
-        conf.command = Some(cc.command.clone());
+
+    #[cfg(feature = "iroh")]
+    if cfg.transport.iroh.enable {
+        let bridge = bridge.clone();
+        let key_path = crate::config::expand_tilde(&cfg.bridge.state_dir).join("iroh.key");
+        let rt = tokio::runtime::Handle::current();
+        let listener = rt
+            .block_on(agentline_transport_iroh::IrohListener::new(
+                &cfg.transport.iroh.secret_key,
+                &key_path,
+                &cfg.transport.iroh.relay_url,
+            ))
+            .map_err(|e| anyhow!("iroh transport: {e}"))?;
+        handles.push(agentline_transport::spawn_transport(
+            bridge,
+            std::sync::Arc::new(listener),
+            token.clone(),
+            cwd.clone(),
+        ));
     }
-    if !cc.args.is_empty() {
-        conf.args = Some(cc.args.clone());
-    }
-    conf.extra_env = proxy_env(&cfg.proxy);
-    conf.extra_env
-        .extend(cc.extra_env.iter().map(|(k, v)| (k.clone(), v.clone())));
-    conf.remove_env_extra = cc.remove_env_extra.clone();
-    conf.inject_settings_env = cc.inject_settings_env;
-    conf.pid_file = Some(agent_pid_path(cfg));
-    spawn_claude_code(conf)
-        .await
-        .map_err(|e| anyhow!("spawn claude-code: {e}"))
+
+    Ok(handles)
 }
 
-async fn build_kimi(cfg: &AppConfig) -> Result<AcpBackend> {
-    let k = &cfg.agent.kimi;
-    let mut conf = KimiConfig::default();
-    if !k.command.is_empty() {
-        conf.command = Some(k.command.clone());
+fn resolve_https_proxy(proxy: &ProxySection) -> String {
+    let shell = agentline_bridge::proxy::detect_shell_proxy();
+    if !proxy.https.is_empty() {
+        proxy.https.clone()
+    } else if !proxy.http.is_empty() {
+        proxy.http.clone()
+    } else if !shell.https.is_empty() {
+        shell.https.clone()
+    } else {
+        shell.http.clone()
     }
-    if !k.args.is_empty() {
-        conf.args = Some(k.args.clone());
-    }
-    conf.extra_env = proxy_env(&cfg.proxy);
-    conf.extra_env
-        .extend(k.extra_env.iter().map(|(k, v)| (k.clone(), v.clone())));
-    if !k.access_token.is_empty() {
-        conf.extra_env
-            .push(("MOONSHOT_API_KEY".to_string(), k.access_token.clone()));
-    }
-    conf.remove_env = k.remove_env.clone();
-    conf.pid_file = Some(agent_pid_path(cfg));
-    spawn_kimi(conf)
-        .await
-        .map_err(|e| anyhow!("spawn kimi: {e}"))
 }
 
-async fn build_qoder(cfg: &AppConfig) -> Result<AcpBackend> {
-    let q = &cfg.agent.qoder;
-    let mut conf = QoderConfig::default();
-    if !q.command.is_empty() {
-        conf.command = Some(q.command.clone());
-    }
-    if !q.args.is_empty() {
-        conf.args = Some(q.args.clone());
-    }
-    conf.extra_env = proxy_env(&cfg.proxy);
-    conf.extra_env
-        .extend(q.extra_env.iter().map(|(k, v)| (k.clone(), v.clone())));
-    conf.remove_env = q.remove_env.clone();
-    if !q.personal_access_token.is_empty() {
-        conf = conf.with_personal_access_token(q.personal_access_token.clone());
-    }
-    conf.pid_file = Some(agent_pid_path(cfg));
-    spawn_qoder(conf)
-        .await
-        .map_err(|e| anyhow!("spawn qoder: {e}"))
-}
-
-async fn build_opencode(cfg: &AppConfig) -> Result<AcpBackend> {
-    let o = &cfg.agent.opencode;
-    let mut conf = OpencodeConfig::default();
-    if !o.command.is_empty() {
-        conf.command = Some(o.command.clone());
-    }
-    if !o.args.is_empty() {
-        conf.args = Some(o.args.clone());
-    }
-    conf.extra_env = proxy_env(&cfg.proxy);
-    conf.extra_env
-        .extend(o.extra_env.iter().map(|(k, v)| (k.clone(), v.clone())));
-    if !o.api_key.is_empty() {
-        conf.extra_env
-            .push(("OPENAI_API_KEY".to_string(), o.api_key.clone()));
-    }
-    if !o.base_url.is_empty() {
-        conf.extra_env
-            .push(("OPENAI_BASE_URL".to_string(), o.base_url.clone()));
-    }
-    conf.remove_env = o.remove_env.clone();
-    conf.pid_file = Some(agent_pid_path(cfg));
-    spawn_opencode(conf)
-        .await
-        .map_err(|e| anyhow!("spawn opencode: {e}"))
-}
-
-async fn build_kiro(cfg: &AppConfig) -> Result<AcpBackend> {
-    let k = &cfg.agent.kiro;
-    let mut conf = KiroConfig::default();
-    if !k.command.is_empty() {
-        conf.command = Some(k.command.clone());
-    }
-    if !k.args.is_empty() {
-        conf.args = Some(k.args.clone());
-    }
-    if !k.agent_name.is_empty() {
-        conf.agent_name = Some(k.agent_name.clone());
-    }
-    conf.extra_env = proxy_env(&cfg.proxy);
-    conf.extra_env
-        .extend(k.extra_env.iter().map(|(k, v)| (k.clone(), v.clone())));
-    conf.remove_env = k.remove_env.clone();
-    conf.pid_file = Some(agent_pid_path(cfg));
-    spawn_kiro(conf)
-        .await
-        .map_err(|e| anyhow!("spawn kiro: {e}"))
-}
-
-async fn build_gemini(cfg: &AppConfig) -> Result<AcpBackend> {
-    let g = &cfg.agent.gemini;
-    let mut conf = GeminiConfig::default();
-    if !g.command.is_empty() {
-        conf.command = Some(g.command.clone());
-    }
-    if !g.args.is_empty() {
-        conf.args = Some(g.args.clone());
-    }
-    conf.extra_env = proxy_env(&cfg.proxy);
-    conf.extra_env
-        .extend(g.extra_env.iter().map(|(k, v)| (k.clone(), v.clone())));
-    conf.remove_env = g.remove_env.clone();
-    conf.pid_file = Some(agent_pid_path(cfg));
-    spawn_gemini(conf)
-        .await
-        .map_err(|e| anyhow!("spawn gemini: {e}"))
-}
-
-async fn build_hermes(cfg: &AppConfig) -> Result<AcpBackend> {
-    let h = &cfg.agent.hermes;
-    let mut conf = HermesConfig::default();
-    if !h.command.is_empty() {
-        conf.command = Some(h.command.clone());
-    }
-    if !h.args.is_empty() {
-        conf.args = Some(h.args.clone());
-    }
-    conf.extra_env = proxy_env(&cfg.proxy);
-    conf.extra_env
-        .extend(h.extra_env.iter().map(|(k, v)| (k.clone(), v.clone())));
-    conf.remove_env = h.remove_env.clone();
-    conf.pid_file = Some(agent_pid_path(cfg));
-    spawn_hermes(conf)
-        .await
-        .map_err(|e| anyhow!("spawn hermes: {e}"))
-}
-
-async fn build_codex(cfg: &AppConfig) -> Result<CodexBackend> {
-    let c = &cfg.agent.codex;
-    let mut conf = CodexConfig::default();
-    if !c.command.is_empty() {
-        conf.command = Some(c.command.clone());
-    }
-    if !c.args.is_empty() {
-        conf.args = Some(c.args.clone());
-    }
-    conf.extra_env = proxy_env(&cfg.proxy);
-    conf.extra_env
-        .extend(c.extra_env.iter().map(|(k, v)| (k.clone(), v.clone())));
-    conf.sandbox_mode = parse_sandbox(&c.sandbox_mode).unwrap_or(conf.sandbox_mode);
-    conf.approval_mode = parse_approval(&c.approval_mode).unwrap_or(conf.approval_mode);
-    conf.skip_git_repo_check = c.skip_git_repo_check;
-    if !c.model.is_empty() {
-        conf.model = Some(c.model.clone());
-    }
-    CodexBackend::spawn(conf)
-        .await
-        .map_err(|e| anyhow!("spawn codex: {e}"))
-}
-
-/// Build the proxy env-var pairs to prepend to every agent's `extra_env`.
-///
-/// These are injected BEFORE the per-agent `extra_env` so the user can still
-/// override individual vars if needed.  `NO_PROXY` always includes the
-/// RFC-1918 LAN ranges plus whatever is in `proxy.no_proxy` and the parent
-/// process's own `$NO_PROXY`.
 fn proxy_env(proxy: &ProxySection) -> Vec<(String, String)> {
     let mut pairs: Vec<(String, String)> = Vec::new();
+    let shell = agentline_bridge::proxy::detect_shell_proxy();
 
-    if !proxy.http.is_empty() {
-        pairs.push(("HTTP_PROXY".into(), proxy.http.clone()));
-        pairs.push(("http_proxy".into(), proxy.http.clone()));
+    // Empty config field = fall back to whatever the user already has set in
+    // their shell (env or .zshrc/.bashrc via detect_shell_proxy), so agentline
+    // matches their ambient proxy setup instead of silently going direct.
+    let http_val = if !proxy.http.is_empty() {
+        proxy.http.clone()
+    } else {
+        shell.http.clone()
+    };
+    if !http_val.is_empty() {
+        pairs.push(("HTTP_PROXY".into(), http_val.clone()));
+        pairs.push(("http_proxy".into(), http_val));
     }
 
     let https_val = if !proxy.https.is_empty() {
         proxy.https.clone()
     } else if !proxy.http.is_empty() {
-        // fall back to http proxy for HTTPS traffic too
         proxy.http.clone()
+    } else if !shell.https.is_empty() {
+        shell.https.clone()
     } else {
-        String::new()
+        shell.http.clone()
     };
     if !https_val.is_empty() {
         pairs.push(("HTTPS_PROXY".into(), https_val.clone()));
         pairs.push(("https_proxy".into(), https_val));
     }
 
-    // Always inject NO_PROXY: config entries + parent env + LAN defaults.
     let no_proxy = agentline_bridge::proxy::build_no_proxy_with(&proxy.no_proxy);
     pairs.push(("NO_PROXY".into(), no_proxy.clone()));
     pairs.push(("no_proxy".into(), no_proxy));
 
     pairs
-}
-
-fn parse_sandbox(s: &str) -> Option<SandboxMode> {
-    match s {
-        "" => None,
-        "read-only" => Some(SandboxMode::ReadOnly),
-        "workspace-write" => Some(SandboxMode::WorkspaceWrite),
-        "danger-full-access" => Some(SandboxMode::DangerFullAccess),
-        _ => None,
-    }
-}
-
-fn parse_approval(s: &str) -> Option<ApprovalMode> {
-    match s {
-        "" => None,
-        "never" => Some(ApprovalMode::Never),
-        "on-request" => Some(ApprovalMode::OnRequest),
-        "on-failure" => Some(ApprovalMode::OnFailure),
-        "untrusted" => Some(ApprovalMode::Untrusted),
-        _ => None,
-    }
-}
-
-struct RuntimeAgentFactory {
-    cfg: AppConfig,
-}
-
-const ALL_AGENTS: &[&str] = &[
-    "claude-code",
-    "kimi",
-    "qoder",
-    "opencode",
-    "kiro",
-    "gemini",
-    "hermes",
-    "codex",
-    "acp",
-];
-
-#[async_trait]
-impl AgentFactory for RuntimeAgentFactory {
-    fn available(&self) -> Vec<String> {
-        ALL_AGENTS.iter().map(|s| s.to_string()).collect()
-    }
-
-    fn available_with_status(&self, _current_agent: &str) -> Vec<AgentInfo> {
-        use crate::agents::{AGENTS, detect_agent};
-        AGENTS
-            .iter()
-            .map(|meta| {
-                let (installed, _version) = detect_agent(meta.cli_cmd);
-                let st = meta.status(installed, &self.cfg.agent);
-                let status = match st {
-                    "ready" => AgentStatus::Ready,
-                    "needs_login" => AgentStatus::Installed,
-                    _ => AgentStatus::NotInstalled,
-                };
-                AgentInfo {
-                    name: meta.id.to_string(),
-                    status,
-                }
-            })
-            .collect()
-    }
-
-    async fn build(&self, name: &str) -> agentline_bridge::Result<Arc<dyn AgentBackend>> {
-        let agent: Arc<dyn AgentBackend> = match name {
-            "claude-code" => Arc::new(
-                build_claude_code(&self.cfg)
-                    .await
-                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
-            ),
-            "kimi" => Arc::new(
-                build_kimi(&self.cfg)
-                    .await
-                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
-            ),
-            "qoder" => Arc::new(
-                build_qoder(&self.cfg)
-                    .await
-                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
-            ),
-            "opencode" => Arc::new(
-                build_opencode(&self.cfg)
-                    .await
-                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
-            ),
-            "kiro" => Arc::new(
-                build_kiro(&self.cfg)
-                    .await
-                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
-            ),
-            "gemini" => Arc::new(
-                build_gemini(&self.cfg)
-                    .await
-                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
-            ),
-            "hermes" => Arc::new(
-                build_hermes(&self.cfg)
-                    .await
-                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
-            ),
-            "codex" => Arc::new(
-                build_codex(&self.cfg)
-                    .await
-                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
-            ),
-            "acp" => Arc::new(
-                build_generic_acp(&self.cfg)
-                    .await
-                    .map_err(|e| agentline_bridge::Error::other(e.to_string()))?,
-            ),
-            other => {
-                return Err(agentline_bridge::Error::other(format!(
-                    "unknown agent backend: {other}"
-                )));
-            }
-        };
-        Ok(agent)
-    }
-}
-
-async fn build_generic_acp(cfg: &AppConfig) -> Result<AcpBackend> {
-    if cfg.agent.acp.command.is_empty() {
-        bail!("agent.backend = \"acp\" requires `agent.acp.command` in config");
-    }
-    let mut extra_env = proxy_env(&cfg.proxy);
-    extra_env.extend(
-        cfg.agent
-            .acp
-            .extra_env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone())),
-    );
-    let acp_cfg = AcpBackendConfig {
-        command: cfg.agent.acp.command.clone(),
-        args: cfg.agent.acp.args.clone(),
-        extra_env,
-        remove_env: cfg.agent.acp.remove_env.clone(),
-        pid_file: Some(agent_pid_path(cfg)),
-    };
-    AcpBackend::spawn(acp_cfg)
-        .await
-        .map_err(|e| anyhow!("spawn acp: {e}"))
 }

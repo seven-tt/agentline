@@ -1,7 +1,8 @@
 use crate::error::{Error, Result};
 use crate::http::HttpClient;
 use crate::types::{BaseInfo, GetUpdatesReq, GetUpdatesResp, WeixinMessage};
-use agentline_im_core::types::{InboundMessage, MessageKind, PeerRef};
+use agentline_im_core::parse_inbound;
+use agentline_im_core::types::{InboundMessage, MessageKind, PeerRef, SourceMessage};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -45,7 +46,7 @@ pub fn spawn_poller(
     registry: crate::token::TokenRegistry,
     agent_done: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
     buffer: usize,
-) -> (mpsc::Receiver<InboundMessage>, JoinHandle<()>) {
+) -> (mpsc::Receiver<SourceMessage>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(buffer.max(1));
     let handle = tokio::spawn(async move {
         run_loop(
@@ -69,7 +70,7 @@ async fn run_loop(
     allowed_users: Arc<Vec<String>>,
     registry: crate::token::TokenRegistry,
     agent_done: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
-    tx: mpsc::Sender<InboundMessage>,
+    tx: mpsc::Sender<SourceMessage>,
 ) {
     let mut backoff_secs = MIN_BACKOFF_SECS;
     loop {
@@ -169,7 +170,7 @@ async fn run_loop(
                             continue;
                         }
                         agent_done.lock().await.remove(&msg.peer.user_id);
-                        if tx.send(msg).await.is_err() {
+                        if tx.send(parse_inbound(msg)).await.is_err() {
                             return; // bridge dropped, stop polling
                         }
                     }

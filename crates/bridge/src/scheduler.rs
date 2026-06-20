@@ -8,16 +8,19 @@ pub(crate) fn publish_registry_from_sessions(
 ) {
     let current = registry.snapshot();
     let mut by_source: HashMap<String, Vec<SessionSnapshot>> = HashMap::new();
-    for (key, a) in sessions.iter() {
-        by_source
-            .entry(key.source_id.clone())
-            .or_default()
-            .push(SessionSnapshot {
-                id: a.session_id.as_str().to_string(),
-                user: a.peer.user_id.clone(),
-                active: true,
-                cwd: a.cwd.display().to_string(),
-            });
+    for (id, s) in sessions.iter() {
+        // A session may be visible from multiple channels; record it under each.
+        for b in &s.bindings {
+            by_source
+                .entry(b.source_id.clone())
+                .or_default()
+                .push(SessionSnapshot {
+                    id: id.to_string(),
+                    user: b.peer.user_id.clone(),
+                    active: true,
+                    cwd: s.cwd.display().to_string(),
+                });
+        }
     }
     let mut data: HashMap<String, ImSnapshot> = current
         .into_iter()

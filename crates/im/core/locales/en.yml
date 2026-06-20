@@ -51,7 +51,7 @@ bridge:
   session_grants_label: "✅ Session Grants"
 
 im:
-  thinking_short: "💭 thought for %{secs}s"
+  thinking_short: "thought for %{secs}s"
   tool_done: "done"
   tool_failed: "failed"
   tool_exec_done: "%{icon} tool execution done"
@@ -71,6 +71,9 @@ im:
   perm_btn_approve_once: "✅ Approve once"
   perm_btn_approve_session: "📌 Approve (session)"
   perm_btn_deny: "❌ Deny"
+  perm_resolved_once: "✅ Approved (once)"
+  perm_resolved_session: "✅ Approved (session)"
+  perm_resolved_deny: "❌ Denied"
   error_prefix: "❌ error: %{msg}"
   stream_done: "✅ ended"
   stream_processing: "⏳ processing..."

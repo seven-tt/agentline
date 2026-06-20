@@ -17,11 +17,16 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
+which = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
+agent-client-protocol = { workspace = true, features = ["unstable_elicitation", "unstable_session_close"] }
+agentline-permission = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

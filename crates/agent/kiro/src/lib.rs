@@ -24,8 +24,9 @@
 //! [`KiroConfig::command`] = `Some("/full/path/to/kiro-cli".into())` if the
 //! launcher process's `PATH` doesn't include the install dir.
 
-pub mod error;
-pub use error::{Error, Result};
+pub mod config;
+pub mod plugin;
+pub use plugin::plugin;
 
 pub use agentline_agent_acp::AcpBackend;
 
@@ -66,7 +67,7 @@ impl KiroConfig {
 
 /// Spawn a Kiro agent (`kiro-cli acp [--agent <name>]`) and return a
 /// ready-to-use `AcpBackend`.
-pub async fn spawn(cfg: KiroConfig) -> Result<AcpBackend> {
+pub async fn spawn(cfg: KiroConfig) -> agentline_bridge::Result<AcpBackend> {
     let command = cfg.command.unwrap_or_else(|| "kiro-cli".to_string());
     let args = cfg.args.unwrap_or_else(|| {
         let mut a = vec!["acp".to_string()];
@@ -83,6 +84,7 @@ pub async fn spawn(cfg: KiroConfig) -> Result<AcpBackend> {
         extra_env: cfg.extra_env,
         remove_env: cfg.remove_env,
         pid_file: cfg.pid_file,
+        ..Default::default()
     };
-    Ok(AcpBackend::spawn(acp_cfg).await?)
+    AcpBackend::spawn(acp_cfg).await
 }

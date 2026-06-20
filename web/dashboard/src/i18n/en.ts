@@ -69,7 +69,7 @@ export default {
     feishu_app_id_placeholder: 'Feishu App ID',
     feishu_app_secret_placeholder: 'Feishu App Secret',
     feishu_allowed_hint: 'Whitelist of open_ids, comma separated',
-    telegram_token_placeholder: 'Token from @BotFather',
+    telegram_token_placeholder: "Token from {'@'}BotFather",
     telegram_api_placeholder: 'Optional, defaults to official API',
   },
 
@@ -165,8 +165,10 @@ export default {
     http_proxy: 'HTTP Proxy',
     https_proxy: 'HTTPS Proxy',
     https_proxy_placeholder: 'Leave empty to fall back to HTTP proxy',
+    proxy_shell_hint: 'Leave empty to use your current shell config: {value}',
     no_proxy: 'NO_PROXY',
     no_proxy_hint: 'LAN addresses are always auto-added to NO_PROXY',
+    no_proxy_shell_hint: 'Your shell config also sets NO_PROXY, merged automatically: {value}',
     log_level: 'Log Level',
     log_error: 'Error — errors only',
     log_warn: 'Warn — warnings and above',
@@ -193,5 +195,11 @@ export default {
 
   logs: {
     no_logs: 'No logs yet',
+  },
+
+  update: {
+    available: 'New version v{version}',
+    updating: 'Updating...',
+    click_update: 'Click to update',
   },
 }

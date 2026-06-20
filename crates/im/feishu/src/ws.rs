@@ -3,13 +3,17 @@
 //! Protocol: POST /callback/ws/endpoint → WSS URL; protobuf-encoded
 //! binary frames; application-level ping/pong via Control frames.
 
+use crate::auth::TokenManager;
 use crate::error::{Error, Result};
 use crate::types::EventCallback;
-use agentline_im_core::types::{InboundMessage, MessageKind, PeerRef};
+use agentline_im_core::parse_inbound;
+use agentline_im_core::types::{InboundMessage, MessageKind, PeerRef, SourceMessage};
 use futures::{SinkExt, StreamExt};
+use rust_i18n::t;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -345,9 +349,15 @@ pub struct WsConfig {
     pub app_secret: String,
     pub allowed_users: Vec<String>,
     pub buffer: usize,
+    pub token_mgr: TokenManager,
+    /// Shared with `FeishuChannel`: permission cards awaiting a click,
+    /// keyed by the card's own message_id. Consumed (removed) on first
+    /// click so a second click on the same card is a no-op instead of
+    /// falling through as a stray chat message.
+    pub perm_cards: Arc<Mutex<HashMap<String, crate::types::PermCardEntry>>>,
 }
 
-pub fn spawn_ws_stream(cfg: WsConfig) -> (mpsc::Receiver<InboundMessage>, JoinHandle<()>) {
+pub fn spawn_ws_stream(cfg: WsConfig) -> (mpsc::Receiver<SourceMessage>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(cfg.buffer.max(1));
     let handle = tokio::spawn(async move {
         run_loop(cfg, tx).await;
@@ -357,10 +367,13 @@ pub fn spawn_ws_stream(cfg: WsConfig) -> (mpsc::Receiver<InboundMessage>, JoinHa
 
 // ─── connection loop ─────────────────────────────────────────
 
-async fn run_loop(cfg: WsConfig, tx: mpsc::Sender<InboundMessage>) {
+async fn run_loop(cfg: WsConfig, tx: mpsc::Sender<SourceMessage>) {
+    let http_for_media = reqwest::Client::builder()
+        .build()
+        .expect("build http client for media");
     let mut backoff = RECONNECT_MIN;
     loop {
-        match run_once(&cfg, &tx).await {
+        match run_once(&cfg, &http_for_media, &tx).await {
             Ok(()) => {
                 tracing::info!("feishu: ws connection closed; reconnecting");
                 backoff = RECONNECT_MIN;
@@ -432,7 +445,11 @@ async fn open_endpoint(cfg: &WsConfig) -> Result<(String, ClientConfig, i32)> {
     Ok((data.url, client_cfg, service_id))
 }
 
-async fn run_once(cfg: &WsConfig, tx: &mpsc::Sender<InboundMessage>) -> Result<()> {
+async fn run_once(
+    cfg: &WsConfig,
+    http_for_media: &reqwest::Client,
+    tx: &mpsc::Sender<SourceMessage>,
+) -> Result<()> {
     let (url, client_cfg, service_id) = open_endpoint(cfg).await?;
     tracing::info!(service_id, "feishu: connecting to ws gateway");
 
@@ -508,7 +525,7 @@ async fn run_once(cfg: &WsConfig, tx: &mpsc::Sender<InboundMessage>) -> Result<(
                                 };
 
                                 if frame.header("type") == Some("event")
-                                    && let Err(e) = handle_event(&payload, cfg, tx).await
+                                    && let Err(e) = handle_event(&payload, cfg, http_for_media, tx).await
                                 {
                                     tracing::warn!(error=%e, "feishu: handle_event failed");
                                 }
@@ -579,7 +596,8 @@ where
 async fn handle_event(
     payload: &[u8],
     cfg: &WsConfig,
-    tx: &mpsc::Sender<InboundMessage>,
+    http: &reqwest::Client,
+    tx: &mpsc::Sender<SourceMessage>,
 ) -> Result<()> {
     let cb: EventCallback =
         serde_json::from_slice(payload).map_err(|e| Error::Parse(format!("event payload: {e}")))?;
@@ -593,7 +611,7 @@ async fn handle_event(
     match event_type {
         "im.message.receive_v1" => {}
         "card.action.trigger" => {
-            return handle_card_action(cb, cfg, tx).await;
+            return handle_card_action(cb, cfg, http, tx).await;
         }
         _ => return Ok(()),
     }
@@ -632,7 +650,40 @@ async fn handle_event(
         }),
     };
 
-    let kind = parse_message_kind(&msg)?;
+    let mut kind = parse_message_kind(&msg)?;
+
+    match &mut kind {
+        MessageKind::Image { local_path, .. } => {
+            if let Ok(img) = serde_json::from_str::<crate::types::ImageContent>(&msg.content)
+                && !img.image_key.is_empty()
+            {
+                let save_dir = crate::media::media_save_dir();
+                *local_path =
+                    crate::media::download_image(http, &cfg.token_mgr, &img.image_key, &save_dir)
+                        .await;
+            }
+        }
+        MessageKind::File { local_path, .. } => {
+            if let Ok(file) = serde_json::from_str::<crate::types::FileContent>(&msg.content)
+                && !file.file_key.is_empty()
+            {
+                let save_dir = crate::media::media_save_dir();
+                if let Some(path) = crate::media::download_file(
+                    http,
+                    &cfg.token_mgr,
+                    &msg.message_id,
+                    &file.file_key,
+                    &file.file_name,
+                    &save_dir,
+                )
+                .await
+                {
+                    *local_path = path;
+                }
+            }
+        }
+        _ => {}
+    }
 
     let inbound = InboundMessage {
         peer,
@@ -640,7 +691,7 @@ async fn handle_event(
         received_at: SystemTime::now(),
     };
 
-    tx.send(inbound)
+    tx.send(parse_inbound(inbound))
         .await
         .map_err(|_| Error::other("inbound channel closed"))?;
     Ok(())
@@ -657,6 +708,14 @@ fn parse_message_kind(msg: &crate::types::EventMessage) -> Result<MessageKind> {
             local_path: None,
             caption: None,
         }),
+        "file" => {
+            let file: crate::types::FileContent = serde_json::from_str(&msg.content)
+                .map_err(|e| Error::Parse(format!("file content: {e}")))?;
+            Ok(MessageKind::File {
+                local_path: std::path::PathBuf::new(),
+                name: file.file_name,
+            })
+        }
         other => {
             tracing::debug!(msg_type=%other, "feishu: unsupported message type, treating as text");
             Ok(MessageKind::Text {
@@ -669,7 +728,8 @@ fn parse_message_kind(msg: &crate::types::EventMessage) -> Result<MessageKind> {
 async fn handle_card_action(
     cb: crate::types::EventCallback,
     cfg: &WsConfig,
-    tx: &mpsc::Sender<InboundMessage>,
+    http: &reqwest::Client,
+    tx: &mpsc::Sender<SourceMessage>,
 ) -> Result<()> {
     let event = match cb.event {
         Some(e) => e,
@@ -686,6 +746,13 @@ async fn handle_card_action(
         return Ok(());
     }
 
+    let card_message_id = event.context.map(|c| c.open_message_id).unwrap_or_default();
+
+    tracing::debug!(
+        card_message_id = %card_message_id,
+        "feishu: card action received"
+    );
+
     let action_value = event
         .action
         .and_then(|a| a.value)
@@ -699,6 +766,46 @@ async fn handle_card_action(
         }
     };
 
+    // Removed (not just looked up): the first click consumes the entry, so a
+    // second click on the same card — the reported bug, no de-dup + no
+    // visual change after clicking — finds nothing here and is dropped
+    // instead of falling through to become a stray "y"/"n" chat message.
+    let perm_card = if card_message_id.is_empty() {
+        None
+    } else {
+        cfg.perm_cards.lock().await.remove(&card_message_id)
+    };
+    match perm_card {
+        Some(entry) => {
+            let status = match text.as_str() {
+                "y" => t!("im.perm_resolved_once"),
+                "s" => t!("im.perm_resolved_session"),
+                _ => t!("im.perm_resolved_deny"),
+            };
+            let card_json = crate::types::build_permission_resolved_card(
+                &entry.kind,
+                &entry.what,
+                entry.risk_icon,
+                &entry.risk,
+                &status,
+            );
+            if let Err(e) =
+                crate::send::update_card(http, &cfg.token_mgr, &card_message_id, &card_json).await
+            {
+                tracing::warn!(error=%e, "feishu: failed to mark permission card resolved");
+            }
+        }
+        None => {
+            if !card_message_id.is_empty() {
+                tracing::debug!(
+                    message_id = %card_message_id,
+                    "feishu: duplicate click on already-answered permission card; ignoring"
+                );
+                return Ok(());
+            }
+        }
+    }
+
     let peer = PeerRef {
         user_id: operator.open_id,
         group_id: None,
@@ -711,7 +818,7 @@ async fn handle_card_action(
         received_at: SystemTime::now(),
     };
 
-    tx.send(inbound)
+    tx.send(parse_inbound(inbound))
         .await
         .map_err(|_| Error::other("inbound channel closed"))?;
     Ok(())

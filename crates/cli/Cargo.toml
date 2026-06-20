@@ -32,6 +32,8 @@ agentline-agent-kiro = { workspace = true }
 agentline-agent-gemini = { workspace = true }
 agentline-agent-hermes = { workspace = true }
 agentline-agent-codex = { workspace = true }
+agentline-transport = { path = "../transport/core" }
+agentline-transport-iroh = { path = "../transport/iroh", optional = true }
 
 async-trait = { workspace = true }
 rust-i18n = { workspace = true }
@@ -41,6 +43,7 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+toml_edit = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 time = { workspace = true }
@@ -49,6 +52,13 @@ axum = { workspace = true }
 qrcode = { workspace = true }
 which = { workspace = true }
 futures = { workspace = true }
+reqwest = { workspace = true }
+
+[features]
+iroh = ["dep:agentline-transport-iroh"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

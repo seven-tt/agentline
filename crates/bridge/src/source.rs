@@ -1,6 +1,6 @@
 use crate::error::Result;
-use crate::event::OutboundEvent;
-use crate::types::{InboundMessage, InboundPayload, PeerRef};
+use crate::event::AgentEvent;
+use crate::types::{PeerRef, SourceMessage};
 use async_trait::async_trait;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -22,21 +22,17 @@ pub trait InputSource: Send + Sync + 'static {
     /// The kind of input source.
     fn kind(&self) -> InputSourceKind;
 
-    /// Start the input source. Returns a receiver for inbound messages.
-    /// The source runs in the background, pushing messages into the channel.
-    async fn start(&self) -> Result<mpsc::Receiver<InboundMessage>>;
+    /// Start the input source. Returns a receiver for pre-parsed inbound
+    /// messages. Each source parses its platform-specific format internally
+    /// before sending [`SourceMessage`]s.
+    async fn start(&self) -> Result<mpsc::Receiver<SourceMessage>>;
 
-    /// Send a structured outbound event to a peer. Each InputSource renders
-    /// the event according to its platform capabilities.
-    async fn send_event(&self, to: &PeerRef, event: &OutboundEvent) -> Result<()>;
+    /// Deliver a semantic agent event to a peer. The InputSource's rendering
+    /// layer synthesizes presentation and displays it per platform.
+    async fn send_update(&self, to: &PeerRef, event: &AgentEvent) -> Result<()>;
 
     /// Gracefully shut down the input source.
     async fn shutdown(&self) -> Result<()>;
-
-    /// Parse an inbound message into a typed payload. IM sources use
-    /// `agentline_im_core::default_parse_message` for the default text/media
-    /// parsing; non-IM sources produce payloads directly.
-    fn parse_message(&self, msg: &InboundMessage) -> InboundPayload;
 }
 
 /// IM-specific capabilities on top of InputSource.
@@ -48,6 +44,33 @@ pub trait ImAdapter: InputSource {
     /// Send Markdown-formatted text. Defaults to `send_text`.
     async fn send_markdown(&self, to: &PeerRef, text: &str) -> Result<()> {
         self.send_text(to, text).await
+    }
+
+    /// Render the `/sessions` reply. `info` is the structured snapshot so a
+    /// platform can build its own native presentation (e.g. a Feishu fields
+    /// card); `fallback_markdown` is a pre-rendered Markdown table for
+    /// platforms that don't need to customize this. This crate has no i18n
+    /// support, so the fallback text is built by the caller (the IM layer),
+    /// not here.
+    async fn send_session_info(
+        &self,
+        to: &PeerRef,
+        _info: Option<&crate::types::SessionInfo>,
+        fallback_markdown: &str,
+    ) -> Result<()> {
+        self.send_markdown(to, fallback_markdown).await
+    }
+
+    /// Render the `/agent` list reply. Same fallback contract as
+    /// [`ImAdapter::send_session_info`].
+    async fn send_agent_list(
+        &self,
+        to: &PeerRef,
+        _current: &str,
+        _agents: &[crate::agent::AgentInfo],
+        fallback_markdown: &str,
+    ) -> Result<()> {
+        self.send_markdown(to, fallback_markdown).await
     }
 
     /// Send a typing indicator. Default is no-op.
@@ -84,4 +107,12 @@ pub trait InboundHandler: Send + Sync {
         bridge: &crate::bridge::Bridge,
         routed: crate::types::RoutedMessage,
     ) -> crate::error::Result<()>;
+
+    /// Called when the bridge invalidates every session it's tracking (e.g.
+    /// `/agent` switching backend drains them all). Handlers that keep their
+    /// own peer → SessionId cache (as `ImInboundHandler` does, for the
+    /// single-session-per-peer IM model) must drop it here too — otherwise
+    /// they keep handing the bridge ids it no longer recognizes. Default
+    /// no-op for handlers that don't cache session ids themselves.
+    async fn invalidate_all_sessions(&self) {}
 }
