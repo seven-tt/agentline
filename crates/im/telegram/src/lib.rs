@@ -835,19 +835,15 @@ impl ImAdapter for TelegramChannel {
                 escape_html(&s.grant_summary),
             ),
         ];
-        let sep = "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈";
-        let mut body = String::new();
-        for (i, (label, value)) in rows.iter().enumerate() {
-            if i > 0 {
-                body.push_str(sep);
-                body.push('\n');
-            }
-            body.push_str(&format!("<b>{}</b>\n  {}\n", escape_html(label), value));
+        let mut table = String::new();
+        for (label, value) in &rows {
+            table.push_str(&format!("<b>{label}：</b>\n{value}\n\n"));
         }
         let html = format!(
-            "📋 <b>#{id} · {agent}</b>\n\n{body}",
+            "📋 <b>#{id} · {agent}</b>\n\n{table}",
             id = s.short_id,
             agent = escape_html(&s.agent_name),
+            table = table.trim_end(),
         );
         self.send_html(to, &html).await
     }

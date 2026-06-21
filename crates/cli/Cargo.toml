@@ -32,8 +32,8 @@ agentline-agent-kiro = { workspace = true }
 agentline-agent-gemini = { workspace = true }
 agentline-agent-hermes = { workspace = true }
 agentline-agent-codex = { workspace = true }
-agentline-transport = { path = "../transport/core" }
-agentline-transport-iroh = { path = "../transport/iroh", optional = true }
+agentline-transport = { path = "../transport/core", version = "1.0.2" }
+agentline-transport-iroh = { path = "../transport/iroh", version = "1.0.2", optional = true }
 
 async-trait = { workspace = true }
 rust-i18n = { workspace = true }

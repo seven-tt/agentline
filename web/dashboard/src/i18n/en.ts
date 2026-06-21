@@ -24,6 +24,7 @@ export default {
     save_failed: 'Save failed: {msg}',
     login_failed: 'Login failed: {msg}',
     refreshed: 'Refreshed',
+    setup_guide: 'Setup Guide',
   },
 
   restart_dialog: {
