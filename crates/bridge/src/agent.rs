@@ -98,6 +98,8 @@ pub struct AgentBuildContext {
     pub pid_file: Option<PathBuf>,
     /// The agent's own `[agent.<id>]` section from config.toml, or `Value::Table({})` if absent.
     pub agent_config_value: toml::Value,
+    /// MCP servers to inject into every new ACP session.
+    pub mcp_servers: Vec<agent_client_protocol::McpServer>,
 }
 
 /// Unified facade every agent crate implements.
@@ -142,6 +144,7 @@ pub struct PluginAgentFactory {
     pid_file: Option<PathBuf>,
     /// The full `[agent]` section from config.toml as a TOML value.
     agent_section: toml::Value,
+    mcp_servers: Vec<agent_client_protocol::McpServer>,
 }
 
 impl PluginAgentFactory {
@@ -150,12 +153,14 @@ impl PluginAgentFactory {
         proxy_env: Vec<(String, String)>,
         pid_file: Option<PathBuf>,
         agent_section: toml::Value,
+        mcp_servers: Vec<agent_client_protocol::McpServer>,
     ) -> Self {
         Self {
             plugins,
             proxy_env,
             pid_file,
             agent_section,
+            mcp_servers,
         }
     }
 
@@ -169,6 +174,7 @@ impl PluginAgentFactory {
             proxy_env: self.proxy_env.clone(),
             pid_file: self.pid_file.clone(),
             agent_config_value,
+            mcp_servers: self.mcp_servers.clone(),
         }
     }
 }

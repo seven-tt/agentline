@@ -35,6 +35,8 @@ pub struct GeminiConfig {
     /// nested-session detection today, so the default is empty.
     pub remove_env: Vec<String>,
     pub pid_file: Option<std::path::PathBuf>,
+    /// MCP servers to inject into the ACP session.
+    pub mcp_servers: Vec<agentline_agent_acp::McpServer>,
 }
 
 impl GeminiConfig {
@@ -59,6 +61,7 @@ pub async fn spawn(cfg: GeminiConfig) -> agentline_bridge::Result<AcpBackend> {
         extra_env: cfg.extra_env,
         remove_env: cfg.remove_env,
         pid_file: cfg.pid_file,
+        mcp_servers: cfg.mcp_servers,
         ..Default::default()
     };
     AcpBackend::spawn(acp_cfg).await

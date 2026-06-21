@@ -73,6 +73,8 @@ pub struct ClaudeCodeConfig {
     pub inject_settings_env: bool,
     /// Path to write the child PID for orphan cleanup by the tray.
     pub pid_file: Option<std::path::PathBuf>,
+    /// MCP servers to inject into the ACP session.
+    pub mcp_servers: Vec<agentline_agent_acp::McpServer>,
 }
 
 impl Default for ClaudeCodeConfig {
@@ -85,6 +87,7 @@ impl Default for ClaudeCodeConfig {
             remove_env_extra: Vec::new(),
             inject_settings_env: true,
             pid_file: None,
+            mcp_servers: Vec::new(),
         }
     }
 }
@@ -122,6 +125,7 @@ pub async fn spawn(cfg: ClaudeCodeConfig) -> agentline_bridge::Result<AcpBackend
         extra_env: cfg.extra_env,
         remove_env,
         pid_file: cfg.pid_file,
+        mcp_servers: cfg.mcp_servers,
         ..Default::default()
     };
     AcpBackend::spawn(acp_cfg).await

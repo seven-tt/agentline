@@ -60,6 +60,7 @@ impl AgentPlugin for AcpPlugin {
             extra_env,
             remove_env: cfg.remove_env,
             pid_file: ctx.pid_file.clone(),
+            mcp_servers: ctx.mcp_servers.clone(),
             ..Default::default()
         };
         crate::AcpBackend::spawn(acp_cfg)

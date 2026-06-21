@@ -106,11 +106,13 @@ async fn try_run_bridge(
     let plugins = build_plugin_registry();
     let agent_section: toml::Value = toml::Value::try_from(&cfg.agent)
         .unwrap_or_else(|_| toml::Value::Table(Default::default()));
+    let mcp_servers = build_mcp_servers(cfg);
     let factory = Arc::new(PluginAgentFactory::new(
         plugins,
         proxy_env(&cfg.proxy),
         Some(agent_pid_path(cfg)),
         agent_section,
+        mcp_servers,
     ));
     let agent: Arc<dyn AgentBackend> = factory
         .build(&cfg.agent.backend)
@@ -230,11 +232,13 @@ async fn run_acp(cfg: AppConfig) -> Result<()> {
     let plugins = build_plugin_registry();
     let agent_section: toml::Value = toml::Value::try_from(&cfg.agent)
         .unwrap_or_else(|_| toml::Value::Table(Default::default()));
+    let mcp_servers = build_mcp_servers(&cfg);
     let factory = Arc::new(PluginAgentFactory::new(
         plugins,
         proxy_env(&cfg.proxy),
         Some(agent_pid_path(&cfg)),
         agent_section,
+        mcp_servers,
     ));
     let agent: Arc<dyn AgentBackend> = factory
         .build(&cfg.agent.backend)
@@ -483,6 +487,16 @@ fn start_transports(cfg: &AppConfig, bridge: &Bridge) -> Result<Vec<std::thread:
     }
 
     Ok(handles)
+}
+
+fn build_mcp_servers(cfg: &AppConfig) -> Vec<agent_client_protocol::McpServer> {
+    if !cfg.web.enable {
+        return vec![];
+    }
+    let url = format!("http://{}/mcp", cfg.web.bind);
+    vec![agent_client_protocol::McpServer::Http(
+        agent_client_protocol::McpServerHttp::new("agentline", url),
+    )]
 }
 
 fn resolve_https_proxy(proxy: &ProxySection) -> String {

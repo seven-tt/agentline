@@ -87,6 +87,7 @@ impl AgentPlugin for ClaudeCodePlugin {
         conf.remove_env_extra = cfg.remove_env_extra;
         conf.inject_settings_env = cfg.inject_settings_env;
         conf.pid_file = ctx.pid_file.clone();
+        conf.mcp_servers = ctx.mcp_servers.clone();
         crate::spawn(conf)
             .await
             .map(|b| Arc::new(b) as Arc<dyn AgentBackend>)

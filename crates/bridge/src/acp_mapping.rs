@@ -48,6 +48,7 @@ pub fn reverse_tool_kind(k: ToolKind) -> AcpToolKind {
         ToolKind::FileWrite => AcpToolKind::Edit,
         ToolKind::Search => AcpToolKind::Search,
         ToolKind::Web => AcpToolKind::Fetch,
+        ToolKind::Mcp => AcpToolKind::Other,
         ToolKind::Other => AcpToolKind::Other,
     }
 }

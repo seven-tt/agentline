@@ -12,6 +12,7 @@ pub use plugin::plugin;
 
 // Re-export the key types from bridge so downstream crates keep the same import paths.
 pub use agent_client_protocol::ToolCallUpdate;
+pub use agent_client_protocol::{McpServer, McpServerHttp};
 pub use agentline_bridge::driver::{AcpBackend, AcpCodec, ToolCallParser};
 
 use agentline_bridge::transport::SpawnSpec;
@@ -33,6 +34,8 @@ pub struct AcpBackendConfig {
     pub pid_file: Option<PathBuf>,
     /// Optional per-agent tool-call normaliser.
     pub parser: Option<Arc<dyn ToolCallParser>>,
+    /// MCP servers to inject into every new ACP session.
+    pub mcp_servers: Vec<agent_client_protocol::McpServer>,
 }
 
 impl AcpBackendConfig {
@@ -61,6 +64,10 @@ impl AcpCodec for AcpBackendConfig {
 
     fn tool_call_parser(&self) -> Option<Arc<dyn ToolCallParser>> {
         self.parser.clone()
+    }
+
+    fn mcp_servers(&self) -> Vec<agent_client_protocol::McpServer> {
+        self.mcp_servers.clone()
     }
 }
 

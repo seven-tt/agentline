@@ -89,6 +89,8 @@ pub fn start(
             "/api/agents/{id}/check-update",
             post(api_agents_check_update),
         )
+        // MCP (Model Context Protocol)
+        .route("/mcp", post(mcp_handler))
         // Projects
         .route("/api/projects", get(api_projects_get).put(api_projects_set))
         // Settings
@@ -1526,4 +1528,121 @@ fn do_system_update(info: &ReleaseDownloadInfo) -> anyhow::Result<()> {
         .join("Contents/MacOS/agentline-tray");
     let _ = Command::new(new_exe).spawn();
     std::process::exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// MCP (Model Context Protocol) endpoint
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct McpRequest {
+    jsonrpc: String,
+    id: Option<serde_json::Value>,
+    method: String,
+    #[serde(default)]
+    params: serde_json::Value,
+}
+
+async fn mcp_handler(
+    State(w): State<Web>,
+    axum::Json(req): axum::Json<McpRequest>,
+) -> axum::Json<serde_json::Value> {
+    let id = req.id.clone().unwrap_or(serde_json::Value::Null);
+
+    if req.jsonrpc != "2.0" {
+        return axum::Json(mcp_error(id, -32600, "invalid jsonrpc version"));
+    }
+
+    match req.method.as_str() {
+        "initialize" => axum::Json(mcp_result(
+            id,
+            serde_json::json!({
+                "protocolVersion": "2025-03-26",
+                "serverInfo": {
+                    "name": "agentline",
+                    "version": env!("CARGO_PKG_VERSION"),
+                },
+                "capabilities": {
+                    "tools": {}
+                }
+            }),
+        )),
+
+        "notifications/initialized" => axum::Json(mcp_result(id, serde_json::json!({}))),
+
+        "tools/list" => axum::Json(mcp_result(
+            id,
+            serde_json::json!({
+                "tools": [{
+                    "name": "list_projects",
+                    "description": "List all configured projects with their name and git URL",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }]
+            }),
+        )),
+
+        "tools/call" => {
+            let tool_name = req
+                .params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            match tool_name {
+                "list_projects" => {
+                    let cfg = reload_cfg(&w);
+                    let projects: Vec<serde_json::Value> = cfg
+                        .projects
+                        .iter()
+                        .map(|p| {
+                            serde_json::json!({
+                                "name": p.name,
+                                "git_url": p.git_url,
+                            })
+                        })
+                        .collect();
+
+                    axum::Json(mcp_result(
+                        id,
+                        serde_json::json!({
+                            "content": [{
+                                "type": "text",
+                                "text": serde_json::to_string(&projects).unwrap_or_default()
+                            }]
+                        }),
+                    ))
+                }
+                _ => axum::Json(mcp_error(id, -32602, &format!("unknown tool: {tool_name}"))),
+            }
+        }
+
+        _ => axum::Json(mcp_error(
+            id,
+            -32601,
+            &format!("method not found: {}", req.method),
+        )),
+    }
+}
+
+fn mcp_result(id: serde_json::Value, result: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": result,
+    })
+}
+
+fn mcp_error(id: serde_json::Value, code: i32, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": code,
+            "message": message,
+        },
+    })
 }

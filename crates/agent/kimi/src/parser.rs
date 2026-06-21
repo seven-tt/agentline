@@ -56,8 +56,11 @@ impl ToolCallParser for KimiToolCallParser {
         let id = tc.tool_call_id.0.to_string();
         let cached = self.cache.lock().ok().and_then(|c| c.get(&id).cloned());
         if let Some(cached_json) = cached
-            && let Ok(enriched) = serde_json::from_value::<ToolCallUpdate>(cached_json)
+            && let Ok(mut enriched) = serde_json::from_value::<ToolCallUpdate>(cached_json)
         {
+            if enriched.fields.title.is_none() {
+                enriched.fields.title = tc.fields.title;
+            }
             return enriched;
         }
         tc

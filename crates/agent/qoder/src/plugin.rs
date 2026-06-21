@@ -69,6 +69,7 @@ impl AgentPlugin for QoderPlugin {
         conf.extra_env.extend(cfg.extra_env);
         conf.remove_env = cfg.remove_env;
         conf.pid_file = ctx.pid_file.clone();
+        conf.mcp_servers = ctx.mcp_servers.clone();
         crate::spawn(conf)
             .await
             .map(|b| Arc::new(b) as Arc<dyn AgentBackend>)

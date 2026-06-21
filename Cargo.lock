@@ -78,6 +78,7 @@ dependencies = [
 name = "agentline"
 version = "1.0.2"
 dependencies = [
+ "agent-client-protocol",
  "agentline-agent-acp",
  "agentline-agent-claude-code",
  "agentline-agent-codex",
