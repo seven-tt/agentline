@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { inject, ref, reactive, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { ChannelsConfig, LoginStatus, OverviewData } from '../types'
+import type { ChannelsConfig, TransportConfig, LoginStatus, OverviewData } from '../types'
 import { api } from '../api'
 import { useRestart } from '../composables/useRestart'
 
@@ -21,7 +21,7 @@ function imDotColor(id: string, enabled: boolean): string {
   if (!im || !im.healthy) return 'var(--red)'
   return 'var(--green)'
 }
-const { markDirty } = useRestart()
+const { markDirty, clearRestart } = useRestart()
 
 const channels = reactive<ChannelsConfig>({
   wechat: { enable: false, allowed_users: [], typing_interval_ms: 5000, logged_in: false },
@@ -38,6 +38,16 @@ const channels = reactive<ChannelsConfig>({
 let savedSnapshot = ''
 let initialSnapshot = ''
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+let channelsDirty = false
+let transportDirty = false
+
+function syncRestartState() {
+  if (channelsDirty || transportDirty) {
+    markDirty()
+  } else {
+    clearRestart()
+  }
+}
 
 function channelsSnapshot(): string {
   const { logged_in, ...wc } = channels.wechat
@@ -68,9 +78,46 @@ watch(channels, () => {
     try {
       await api.saveChannels(channels)
       savedSnapshot = channelsSnapshot()
-      if (savedSnapshot !== initialSnapshot) {
-        markDirty()
-      }
+      channelsDirty = savedSnapshot !== initialSnapshot
+      syncRestartState()
+    } catch (e: any) {
+      addToast('error', t('common.save_failed', { msg: e.message }))
+    }
+  }, 500)
+}, { deep: true })
+
+// Iroh transport
+const transport = reactive<TransportConfig>({
+  iroh: { enable: false, token: '', relay_url: '' },
+})
+let irohSavedSnapshot = ''
+let irohInitialSnapshot = ''
+let irohSaveTimer: ReturnType<typeof setTimeout> | null = null
+
+function irohSnapshot(): string {
+  return JSON.stringify({ iroh: transport.iroh })
+}
+
+async function fetchTransport() {
+  try {
+    const data = await api.getTransport()
+    Object.assign(transport.iroh, data.iroh)
+    irohSavedSnapshot = irohSnapshot()
+    irohInitialSnapshot = irohSavedSnapshot
+  } catch { /* ignore */ }
+}
+
+watch(transport, () => {
+  if (!irohSavedSnapshot) return
+  const current = irohSnapshot()
+  if (current === irohSavedSnapshot) return
+  if (irohSaveTimer) clearTimeout(irohSaveTimer)
+  irohSaveTimer = setTimeout(async () => {
+    try {
+      await api.saveTransport(transport)
+      irohSavedSnapshot = irohSnapshot()
+      transportDirty = irohSavedSnapshot !== irohInitialSnapshot
+      syncRestartState()
     } catch (e: any) {
       addToast('error', t('common.save_failed', { msg: e.message }))
     }
@@ -109,10 +156,38 @@ async function cancelLogin() {
   loginState.value = { state: 'idle', message: '' }
 }
 
-onMounted(fetchChannels)
+onMounted(() => { fetchChannels(); fetchTransport() })
 </script>
 
 <template>
+  <!-- Iroh P2P Transport -->
+  <div class="card">
+    <div class="card-head">
+      <h3><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 4px"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>{{ $t('channels.iroh_title') }}</h3>
+      <div class="card-head-actions">
+        <span v-if="transport.iroh.enable" class="badge badge-green"><span class="badge-dot"></span>{{ $t('common.enabled') }}</span>
+        <button
+          :class="['toggle', { on: transport.iroh.enable }]"
+          @click="transport.iroh.enable = !transport.iroh.enable"
+        >
+          <span class="thumb"></span>
+        </button>
+      </div>
+    </div>
+    <div class="card-body" v-if="transport.iroh.enable">
+      <p class="text-muted" style="margin-bottom: 12px">{{ $t('channels.iroh_desc') }}</p>
+      <div class="field">
+        <label class="field-label">Token</label>
+        <input type="password" v-model="transport.iroh.token" class="input-mono" :placeholder="$t('channels.iroh_token_placeholder')" />
+        <span class="field-hint">{{ $t('channels.iroh_token_hint') }}</span>
+      </div>
+      <div class="field">
+        <label class="field-label">Relay URL</label>
+        <input type="text" v-model="transport.iroh.relay_url" class="input-mono" :placeholder="$t('channels.iroh_relay_placeholder')" />
+      </div>
+    </div>
+  </div>
+
   <!-- Feishu -->
   <div class="card">
     <div class="card-head">

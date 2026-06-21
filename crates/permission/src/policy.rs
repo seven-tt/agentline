@@ -96,6 +96,15 @@ impl PermissionPolicy {
                 }
                 PermissionDecision::Ask
             }
+            ToolKind::Mcp => {
+                if is_mcp_auto_approvable(what) {
+                    return PermissionDecision::AutoApprove(AutoApproveReason::SafeInCwd);
+                }
+                if self.granted_kinds.contains(&ToolKind::Mcp) {
+                    return PermissionDecision::AutoApprove(AutoApproveReason::SessionGrant);
+                }
+                PermissionDecision::Ask
+            }
             ToolKind::Other => PermissionDecision::Ask,
             _ => {
                 if self.granted_kinds.contains(&tool_kind) {
@@ -181,6 +190,10 @@ impl PermissionPolicy {
             parts.join(", ")
         }
     }
+}
+
+fn is_mcp_auto_approvable(what: &str) -> bool {
+    what.contains("mcp__agentline__")
 }
 
 #[cfg(test)]
@@ -376,6 +389,46 @@ mod tests {
         assert!(matches!(
             p.evaluate(ToolKind::Other, "", &cwd()),
             PermissionDecision::Ask
+        ));
+    }
+
+    fn mcp_what(tool: &str) -> String {
+        format!("🔌 Mcp({})", tool)
+    }
+
+    #[test]
+    fn mcp_agentline_auto_approved() {
+        let p = PermissionPolicy::new();
+        assert!(matches!(
+            p.evaluate(
+                ToolKind::Mcp,
+                &mcp_what("mcp__agentline__list_projects"),
+                &cwd()
+            ),
+            PermissionDecision::AutoApprove(AutoApproveReason::SafeInCwd)
+        ));
+    }
+
+    #[test]
+    fn mcp_third_party_requires_ask() {
+        let p = PermissionPolicy::new();
+        assert!(matches!(
+            p.evaluate(ToolKind::Mcp, &mcp_what("mcp__github__search"), &cwd()),
+            PermissionDecision::Ask
+        ));
+    }
+
+    #[test]
+    fn mcp_session_grant() {
+        let mut p = PermissionPolicy::new();
+        p.apply_response(
+            ToolKind::Mcp,
+            PermissionResponse::Session,
+            &mcp_what("mcp__github__search"),
+        );
+        assert!(matches!(
+            p.evaluate(ToolKind::Mcp, &mcp_what("mcp__github__list_repos"), &cwd()),
+            PermissionDecision::AutoApprove(AutoApproveReason::SessionGrant)
         ));
     }
 

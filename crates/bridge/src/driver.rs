@@ -52,6 +52,9 @@ pub trait AcpCodec: Send + Sync + 'static {
     fn tool_call_parser(&self) -> Option<Arc<dyn ToolCallParser>> {
         None
     }
+    fn mcp_servers(&self) -> Vec<acp::McpServer> {
+        vec![]
+    }
 }
 
 // ─── internal command channel ────────────────────────────────────────────────
@@ -353,7 +356,8 @@ async fn bridge_main(
                     let Some(cmd) = cmd else { break 'outer; };
                     match cmd {
                         AcpCmd::NewSession { cwd, reply } => {
-                            let req = acp::NewSessionRequest::new(cwd);
+                            let req = acp::NewSessionRequest::new(cwd)
+                                .mcp_servers(codec.mcp_servers());
                             match conn.as_ref().new_session(req).await {
                                 Ok(resp) => {
                                     let acp_sid = resp.session_id;

@@ -40,6 +40,8 @@ pub struct KimiConfig {
     /// detection today, so the default is empty.
     pub remove_env: Vec<String>,
     pub pid_file: Option<std::path::PathBuf>,
+    /// MCP servers to inject into the ACP session.
+    pub mcp_servers: Vec<agentline_agent_acp::McpServer>,
 }
 
 impl KimiConfig {
@@ -72,9 +74,7 @@ pub async fn spawn(cfg: KimiConfig) -> agentline_bridge::Result<AcpBackend> {
         extra_env: cfg.extra_env,
         remove_env: cfg.remove_env,
         pid_file: cfg.pid_file,
-        // kimi's ACP server omits tool kind/title and ships tool args as JSON
-        // text in `content`; inject kimi's own normalizer so the ACP client
-        // (and bridge) receive a standard tool kind/label.
+        mcp_servers: cfg.mcp_servers,
         parser: Some(std::sync::Arc::new(KimiToolCallParser::new())),
     };
     AcpBackend::spawn(acp_cfg).await

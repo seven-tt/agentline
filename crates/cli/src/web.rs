@@ -76,6 +76,11 @@ pub fn start(
         .route("/api/channels/wechat/login/cancel", post(api_login_cancel))
         .route("/api/channels/wechat/login/status", get(api_login_status))
         .route("/api/channels/wechat/login/qr.png", get(api_login_qr))
+        // Transport
+        .route(
+            "/api/transport",
+            get(api_transport_get).post(api_transport_set),
+        )
         // Agents
         .route("/api/agents", get(api_agents))
         .route("/api/agents/config", post(api_agents_config))
@@ -84,6 +89,8 @@ pub fn start(
             "/api/agents/{id}/check-update",
             post(api_agents_check_update),
         )
+        // MCP (Model Context Protocol)
+        .route("/mcp", post(mcp_handler))
         // Projects
         .route("/api/projects", get(api_projects_get).put(api_projects_set))
         // Settings
@@ -401,6 +408,74 @@ async fn api_channels_set(
         }
         if let Some(ref v) = tg.allowed_users {
             updated = set_toml_string_array(&updated, "im.telegram", "allowed_users", v);
+        }
+    }
+
+    if let Err(e) = std::fs::write(&path, &updated) {
+        return err_response(format!("write config: {e}"));
+    }
+    ok_response("saved")
+}
+
+// ─── /api/transport ────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct TransportOut {
+    iroh: IrohTransportOut,
+}
+
+#[derive(Serialize)]
+struct IrohTransportOut {
+    enable: bool,
+    token: String,
+    relay_url: String,
+}
+
+async fn api_transport_get(State(w): State<Web>) -> axum::Json<TransportOut> {
+    let cfg = reload_cfg(&w);
+    axum::Json(TransportOut {
+        iroh: IrohTransportOut {
+            enable: cfg.transport.iroh.enable,
+            token: cfg.transport.iroh.token.clone(),
+            relay_url: cfg.transport.iroh.relay_url.clone(),
+        },
+    })
+}
+
+#[derive(Deserialize, Default)]
+struct TransportIn {
+    #[serde(default)]
+    iroh: Option<IrohTransportIn>,
+}
+
+#[derive(Deserialize)]
+struct IrohTransportIn {
+    enable: Option<bool>,
+    token: Option<String>,
+    relay_url: Option<String>,
+}
+
+async fn api_transport_set(
+    State(w): State<Web>,
+    axum::Json(body): axum::Json<TransportIn>,
+) -> Response {
+    let path = config_path(&w);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => return err_response(format!("read config: {e}")),
+    };
+
+    let mut updated = text;
+
+    if let Some(ref iroh) = body.iroh {
+        if let Some(v) = iroh.enable {
+            updated = set_toml_bool(&updated, "transport.iroh", "enable", v);
+        }
+        if let Some(ref v) = iroh.token {
+            updated = set_toml_key(&updated, "transport.iroh", "token", v);
+        }
+        if let Some(ref v) = iroh.relay_url {
+            updated = set_toml_key(&updated, "transport.iroh", "relay_url", v);
         }
     }
 
@@ -1453,4 +1528,121 @@ fn do_system_update(info: &ReleaseDownloadInfo) -> anyhow::Result<()> {
         .join("Contents/MacOS/agentline-tray");
     let _ = Command::new(new_exe).spawn();
     std::process::exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// MCP (Model Context Protocol) endpoint
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct McpRequest {
+    jsonrpc: String,
+    id: Option<serde_json::Value>,
+    method: String,
+    #[serde(default)]
+    params: serde_json::Value,
+}
+
+async fn mcp_handler(
+    State(w): State<Web>,
+    axum::Json(req): axum::Json<McpRequest>,
+) -> axum::Json<serde_json::Value> {
+    let id = req.id.clone().unwrap_or(serde_json::Value::Null);
+
+    if req.jsonrpc != "2.0" {
+        return axum::Json(mcp_error(id, -32600, "invalid jsonrpc version"));
+    }
+
+    match req.method.as_str() {
+        "initialize" => axum::Json(mcp_result(
+            id,
+            serde_json::json!({
+                "protocolVersion": "2025-03-26",
+                "serverInfo": {
+                    "name": "agentline",
+                    "version": env!("CARGO_PKG_VERSION"),
+                },
+                "capabilities": {
+                    "tools": {}
+                }
+            }),
+        )),
+
+        "notifications/initialized" => axum::Json(mcp_result(id, serde_json::json!({}))),
+
+        "tools/list" => axum::Json(mcp_result(
+            id,
+            serde_json::json!({
+                "tools": [{
+                    "name": "list_projects",
+                    "description": "List all configured projects with their name and git URL",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }]
+            }),
+        )),
+
+        "tools/call" => {
+            let tool_name = req
+                .params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            match tool_name {
+                "list_projects" => {
+                    let cfg = reload_cfg(&w);
+                    let projects: Vec<serde_json::Value> = cfg
+                        .projects
+                        .iter()
+                        .map(|p| {
+                            serde_json::json!({
+                                "name": p.name,
+                                "git_url": p.git_url,
+                            })
+                        })
+                        .collect();
+
+                    axum::Json(mcp_result(
+                        id,
+                        serde_json::json!({
+                            "content": [{
+                                "type": "text",
+                                "text": serde_json::to_string(&projects).unwrap_or_default()
+                            }]
+                        }),
+                    ))
+                }
+                _ => axum::Json(mcp_error(id, -32602, &format!("unknown tool: {tool_name}"))),
+            }
+        }
+
+        _ => axum::Json(mcp_error(
+            id,
+            -32601,
+            &format!("method not found: {}", req.method),
+        )),
+    }
+}
+
+fn mcp_result(id: serde_json::Value, result: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": result,
+    })
+}
+
+fn mcp_error(id: serde_json::Value, code: i32, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": code,
+            "message": message,
+        },
+    })
 }

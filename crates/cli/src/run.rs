@@ -106,11 +106,13 @@ async fn try_run_bridge(
     let plugins = build_plugin_registry();
     let agent_section: toml::Value = toml::Value::try_from(&cfg.agent)
         .unwrap_or_else(|_| toml::Value::Table(Default::default()));
+    let mcp_servers = build_mcp_servers(cfg);
     let factory = Arc::new(PluginAgentFactory::new(
         plugins,
         proxy_env(&cfg.proxy),
         Some(agent_pid_path(cfg)),
         agent_section,
+        mcp_servers,
     ));
     let agent: Arc<dyn AgentBackend> = factory
         .build(&cfg.agent.backend)
@@ -230,11 +232,13 @@ async fn run_acp(cfg: AppConfig) -> Result<()> {
     let plugins = build_plugin_registry();
     let agent_section: toml::Value = toml::Value::try_from(&cfg.agent)
         .unwrap_or_else(|_| toml::Value::Table(Default::default()));
+    let mcp_servers = build_mcp_servers(&cfg);
     let factory = Arc::new(PluginAgentFactory::new(
         plugins,
         proxy_env(&cfg.proxy),
         Some(agent_pid_path(&cfg)),
         agent_section,
+        mcp_servers,
     ));
     let agent: Arc<dyn AgentBackend> = factory
         .build(&cfg.agent.backend)
@@ -442,11 +446,6 @@ fn agent_pid_path(cfg: &AppConfig) -> std::path::PathBuf {
 #[allow(unused_mut, unused_variables)]
 fn start_transports(cfg: &AppConfig, bridge: &Bridge) -> Result<Vec<std::thread::JoinHandle<()>>> {
     let mut handles = Vec::new();
-    let token = if cfg.transport.token.is_empty() {
-        None
-    } else {
-        Some(cfg.transport.token.clone())
-    };
     let cwd = bridge.config().default_cwd.clone();
 
     #[cfg(unix)]
@@ -457,7 +456,7 @@ fn start_transports(cfg: &AppConfig, bridge: &Bridge) -> Result<Vec<std::thread:
         handles.push(agentline_transport::spawn_transport(
             bridge.clone(),
             std::sync::Arc::new(listener),
-            token.clone(),
+            None,
             cwd.clone(),
         ));
     }
@@ -465,6 +464,11 @@ fn start_transports(cfg: &AppConfig, bridge: &Bridge) -> Result<Vec<std::thread:
     #[cfg(feature = "iroh")]
     if cfg.transport.iroh.enable {
         let bridge = bridge.clone();
+        let iroh_token = if cfg.transport.iroh.token.is_empty() {
+            None
+        } else {
+            Some(cfg.transport.iroh.token.clone())
+        };
         let key_path = crate::config::expand_tilde(&cfg.bridge.state_dir).join("iroh.key");
         let rt = tokio::runtime::Handle::current();
         let listener = rt
@@ -477,12 +481,22 @@ fn start_transports(cfg: &AppConfig, bridge: &Bridge) -> Result<Vec<std::thread:
         handles.push(agentline_transport::spawn_transport(
             bridge,
             std::sync::Arc::new(listener),
-            token.clone(),
+            iroh_token,
             cwd.clone(),
         ));
     }
 
     Ok(handles)
+}
+
+fn build_mcp_servers(cfg: &AppConfig) -> Vec<agent_client_protocol::McpServer> {
+    if !cfg.web.enable {
+        return vec![];
+    }
+    let url = format!("http://{}/mcp", cfg.web.bind);
+    vec![agent_client_protocol::McpServer::Http(
+        agent_client_protocol::McpServerHttp::new("agentline", url),
+    )]
 }
 
 fn resolve_https_proxy(proxy: &ProxySection) -> String {

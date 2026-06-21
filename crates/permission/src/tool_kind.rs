@@ -6,6 +6,7 @@ pub enum ToolKind {
     FileWrite,
     Search,
     Web,
+    Mcp,
     Other,
 }
 
@@ -18,6 +19,7 @@ impl ToolKind {
             ToolKind::FileWrite => "📝",
             ToolKind::Search => "🔍",
             ToolKind::Web => "🌐",
+            ToolKind::Mcp => "🔌",
             ToolKind::Other => "⚙️",
         }
     }
@@ -30,6 +32,7 @@ impl ToolKind {
             ToolKind::FileWrite => "FileWrite",
             ToolKind::Search => "Search",
             ToolKind::Web => "Web",
+            ToolKind::Mcp => "Mcp",
             ToolKind::Other => "Other",
         }
     }

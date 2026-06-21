@@ -72,6 +72,11 @@ export default {
     feishu_allowed_hint: 'Whitelist of open_ids, comma separated',
     telegram_token_placeholder: "Token from {'@'}BotFather",
     telegram_api_placeholder: 'Optional, defaults to official API',
+    iroh_title: 'Iroh P2P Remote',
+    iroh_desc: 'Enable remote agent access via iroh P2P protocol',
+    iroh_token_placeholder: 'Connection auth secret',
+    iroh_token_hint: 'Used for connection authentication and message signing. Leave empty for no auth.',
+    iroh_relay_placeholder: 'Optional, defaults to n0 public relay',
   },
 
   agent: {

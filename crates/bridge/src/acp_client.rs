@@ -230,6 +230,11 @@ fn extract_tool_kind_generic(tool_call: &acp::ToolCallUpdate) -> ToolKind {
     {
         return k;
     }
+    if let Some(title) = &fields.title
+        && title.starts_with("mcp__")
+    {
+        return ToolKind::Mcp;
+    }
     if let Some(raw) = &fields.raw_input {
         if raw.get("command").is_some() {
             return ToolKind::Shell;
