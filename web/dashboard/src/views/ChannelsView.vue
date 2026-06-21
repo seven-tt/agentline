@@ -5,9 +5,15 @@ import type { ChannelsConfig, LoginStatus, OverviewData } from '../types'
 import { api } from '../api'
 import { useRestart } from '../composables/useRestart'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const addToast = inject<(type: 'success' | 'error' | 'info', msg: string) => void>('addToast')!
 const overview = inject<OverviewData>('overview')!
+
+const DOCS_BASE = 'https://github.com/seven-tt/agentline/blob/main/docs'
+function helpUrl(im: string): string {
+  const suffix = locale.value === 'zh-CN' ? '' : '.en'
+  return `${DOCS_BASE}/setup-${im}${suffix}.md`
+}
 
 function imDotColor(id: string, enabled: boolean): string {
   if (!enabled) return 'var(--text-secondary)'
@@ -110,7 +116,9 @@ onMounted(fetchChannels)
   <!-- Feishu -->
   <div class="card">
     <div class="card-head">
-      <h3><span class="im-dot" :style="{ background: imDotColor('feishu', channels.feishu.enable) }"></span> {{ $t('channels.feishu_title') }}</h3>
+      <h3><span class="im-dot" :style="{ background: imDotColor('feishu', channels.feishu.enable) }"></span> {{ $t('channels.feishu_title') }}
+        <a :href="helpUrl('feishu')" target="_blank" class="help-link" :title="$t('common.setup_guide')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></a>
+      </h3>
       <div class="card-head-actions">
         <span v-if="channels.feishu.enable" class="badge badge-green"><span class="badge-dot"></span>{{ $t('common.enabled') }}</span>
         <button
@@ -149,7 +157,9 @@ onMounted(fetchChannels)
   <!-- DingTalk -->
   <div class="card">
     <div class="card-head">
-      <h3><span class="im-dot" :style="{ background: imDotColor('dingtalk', channels.dingtalk.enable) }"></span> {{ $t('channels.dingtalk_title') }}</h3>
+      <h3><span class="im-dot" :style="{ background: imDotColor('dingtalk', channels.dingtalk.enable) }"></span> {{ $t('channels.dingtalk_title') }}
+        <a :href="helpUrl('dingtalk')" target="_blank" class="help-link" :title="$t('common.setup_guide')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></a>
+      </h3>
       <div class="card-head-actions">
         <span v-if="channels.dingtalk.enable" class="badge badge-green"><span class="badge-dot"></span>{{ $t('common.enabled') }}</span>
         <button
@@ -190,7 +200,9 @@ onMounted(fetchChannels)
   <!-- Telegram -->
   <div class="card">
     <div class="card-head">
-      <h3><span class="im-dot" :style="{ background: imDotColor('telegram', channels.telegram.enable) }"></span> Telegram</h3>
+      <h3><span class="im-dot" :style="{ background: imDotColor('telegram', channels.telegram.enable) }"></span> Telegram
+        <a :href="helpUrl('telegram')" target="_blank" class="help-link" :title="$t('common.setup_guide')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></a>
+      </h3>
       <div class="card-head-actions">
         <span v-if="channels.telegram.enable" class="badge badge-green"><span class="badge-dot"></span>{{ $t('common.enabled') }}</span>
         <button
@@ -292,6 +304,19 @@ onMounted(fetchChannels)
 </template>
 
 <style scoped>
+.help-link {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  color: var(--text-secondary);
+  opacity: 0.6;
+  transition: opacity 0.15s, color 0.15s;
+  vertical-align: middle;
+}
+.help-link:hover {
+  opacity: 1;
+  color: var(--blue, #4F6BFF);
+}
 .wechat-login-prompt {
   display: flex;
   flex-direction: column;

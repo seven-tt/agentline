@@ -158,10 +158,10 @@ fn run_tray() -> Result<()> {
         Err(e) => tracing::warn!(error=%e, "could not start daemon"),
     }
 
-    let event_loop = EventLoopBuilder::new().build();
-
     #[cfg(target_os = "macos")]
     hide_from_dock();
+
+    let event_loop = EventLoopBuilder::new().build();
 
     let menu = Menu::new();
     let status_item = MenuItem::new(tr.status_checking(), false, None);

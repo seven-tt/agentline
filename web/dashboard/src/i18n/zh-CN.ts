@@ -24,6 +24,7 @@ export default {
     save_failed: '保存失败: {msg}',
     login_failed: '登录失败: {msg}',
     refreshed: '已刷新',
+    setup_guide: '查看接入教程',
   },
 
   restart_dialog: {

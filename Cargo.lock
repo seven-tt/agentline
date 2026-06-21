@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "agentline"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agentline-agent-acp",
  "agentline-agent-claude-code",
@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-acp"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agent-client-protocol",
  "agentline-bridge",
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-claude-code"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -157,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-codex"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agentline-bridge",
  "anyhow",
@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-gemini"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-hermes"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -214,7 +214,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-kimi"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-kiro"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-opencode"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -272,7 +272,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-qoder"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-bridge"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agent-client-protocol",
  "agentline-permission",
@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-im-core"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agent-client-protocol",
  "agentline-bridge",
@@ -325,7 +325,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-im-dingtalk"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agentline-im-core",
  "async-trait",
@@ -344,7 +344,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-im-feishu"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agentline-im-core",
  "async-trait",
@@ -364,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-im-telegram"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agentline-im-core",
  "async-trait",
@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-im-wechat"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "aes",
  "agentline-im-core",
@@ -404,14 +404,14 @@ dependencies = [
 
 [[package]]
 name = "agentline-permission"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "tokio",
 ]
 
 [[package]]
 name = "agentline-transport"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agentline-bridge",
  "async-trait",
@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-transport-iroh"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agentline-bridge",
  "agentline-transport",
@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-tray"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "agentline-bridge",
  "anyhow",
@@ -5404,7 +5404,7 @@ checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
 name = "telegramify-markdown"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "pulldown-cmark",
 ]
