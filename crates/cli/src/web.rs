@@ -76,6 +76,11 @@ pub fn start(
         .route("/api/channels/wechat/login/cancel", post(api_login_cancel))
         .route("/api/channels/wechat/login/status", get(api_login_status))
         .route("/api/channels/wechat/login/qr.png", get(api_login_qr))
+        // Transport
+        .route(
+            "/api/transport",
+            get(api_transport_get).post(api_transport_set),
+        )
         // Agents
         .route("/api/agents", get(api_agents))
         .route("/api/agents/config", post(api_agents_config))
@@ -401,6 +406,74 @@ async fn api_channels_set(
         }
         if let Some(ref v) = tg.allowed_users {
             updated = set_toml_string_array(&updated, "im.telegram", "allowed_users", v);
+        }
+    }
+
+    if let Err(e) = std::fs::write(&path, &updated) {
+        return err_response(format!("write config: {e}"));
+    }
+    ok_response("saved")
+}
+
+// ─── /api/transport ────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct TransportOut {
+    iroh: IrohTransportOut,
+}
+
+#[derive(Serialize)]
+struct IrohTransportOut {
+    enable: bool,
+    token: String,
+    relay_url: String,
+}
+
+async fn api_transport_get(State(w): State<Web>) -> axum::Json<TransportOut> {
+    let cfg = reload_cfg(&w);
+    axum::Json(TransportOut {
+        iroh: IrohTransportOut {
+            enable: cfg.transport.iroh.enable,
+            token: cfg.transport.iroh.token.clone(),
+            relay_url: cfg.transport.iroh.relay_url.clone(),
+        },
+    })
+}
+
+#[derive(Deserialize, Default)]
+struct TransportIn {
+    #[serde(default)]
+    iroh: Option<IrohTransportIn>,
+}
+
+#[derive(Deserialize)]
+struct IrohTransportIn {
+    enable: Option<bool>,
+    token: Option<String>,
+    relay_url: Option<String>,
+}
+
+async fn api_transport_set(
+    State(w): State<Web>,
+    axum::Json(body): axum::Json<TransportIn>,
+) -> Response {
+    let path = config_path(&w);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => return err_response(format!("read config: {e}")),
+    };
+
+    let mut updated = text;
+
+    if let Some(ref iroh) = body.iroh {
+        if let Some(v) = iroh.enable {
+            updated = set_toml_bool(&updated, "transport.iroh", "enable", v);
+        }
+        if let Some(ref v) = iroh.token {
+            updated = set_toml_key(&updated, "transport.iroh", "token", v);
+        }
+        if let Some(ref v) = iroh.relay_url {
+            updated = set_toml_key(&updated, "transport.iroh", "relay_url", v);
         }
     }
 

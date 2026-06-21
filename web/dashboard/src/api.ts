@@ -1,6 +1,7 @@
 import type {
   OverviewData,
   ChannelsConfig,
+  TransportConfig,
   AgentsData,
   AgentConfigIn,
   InstallResult,
@@ -59,6 +60,10 @@ export const api = {
   wechatLoginCancel: () => post('/api/channels/wechat/login/cancel'),
   wechatLoginStatus: () => get<LoginStatus>('/api/channels/wechat/login/status'),
   wechatLoginQrUrl: `${BASE}/api/channels/wechat/login/qr.png`,
+
+  // Transport
+  getTransport: () => get<TransportConfig>('/api/transport'),
+  saveTransport: (data: Partial<TransportConfig>) => post('/api/transport', data),
 
   // Agent
   getAgents: () => get<AgentsData>('/api/agents'),

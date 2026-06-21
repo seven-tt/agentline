@@ -130,6 +130,12 @@ export interface LoginStatus {
   message: string
 }
 
+// ─── Transport ────────────────────────────────────────────────
+
+export interface TransportConfig {
+  iroh: { enable: boolean; token: string; relay_url: string }
+}
+
 // ─── Settings ──────────────────────────────────────────────────
 
 export interface SettingsConfig {

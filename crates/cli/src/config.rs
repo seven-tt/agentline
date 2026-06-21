@@ -88,10 +88,6 @@ pub struct ProxySection {
 /// Transport layer: unix socket and iroh P2P.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TransportSection {
-    /// Shared secret for connection authentication + message signing.
-    /// Empty = no auth (local development only).
-    #[serde(default)]
-    pub token: String,
     /// Path for the unix domain socket. Empty = disabled.
     #[serde(default)]
     #[cfg_attr(not(unix), allow(dead_code))]
@@ -106,6 +102,10 @@ pub struct TransportSection {
 pub struct IrohTransportCfg {
     #[serde(default)]
     pub enable: bool,
+    /// Secret for connection authentication + message signing.
+    /// Empty = no auth.
+    #[serde(default)]
+    pub token: String,
     /// Hex-encoded 32-byte secret key for a stable NodeId across restarts.
     /// If empty, auto-generated and persisted to `<state_dir>/iroh.key`.
     #[serde(default)]

@@ -72,6 +72,11 @@ export default {
     feishu_allowed_hint: '白名单 open_id 列表，逗号分隔',
     telegram_token_placeholder: "从 {'@'}BotFather 获取的 token",
     telegram_api_placeholder: '可选，默认使用官方 API',
+    iroh_title: 'Iroh P2P 远程连接',
+    iroh_desc: '启用后可通过 iroh 协议远程连接 Agent',
+    iroh_token_placeholder: '连接认证密钥',
+    iroh_token_hint: '用于连接认证和消息签名，留空则不认证',
+    iroh_relay_placeholder: '可选，默认使用 n0 公共 relay',
   },
 
   agent: {
