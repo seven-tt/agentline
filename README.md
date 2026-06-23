@@ -203,7 +203,7 @@ backend = "claude-code"               # 9 built-in options + generic "acp"
 [bridge]
 default_cwd = ""                      # empty = auto-isolate per agent
 locale = "zh-CN"                      # "zh-CN" | "en"
-session_idle_timeout_secs = 7200      # auto-reset after 2h idle
+session_idle_timeout_secs = 0         # 0 = disabled; set e.g. 7200 for 2h auto-reset
 
 [web]
 enable = true

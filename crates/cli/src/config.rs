@@ -455,7 +455,7 @@ pub struct BridgeSection {
     pub state_dir: String,
     /// Close and recreate the agent session after this many seconds of
     /// inactivity. `0` disables the timeout (session lives until `/new` or
-    /// process exit). Default: 7200 (2 hours).
+    /// process exit). Default: 0 (disabled).
     #[serde(default = "default_session_idle_timeout_secs")]
     pub session_idle_timeout_secs: u64,
     /// UI language: "zh-CN" | "en". Default: "zh-CN".
@@ -479,7 +479,7 @@ fn default_locale() -> String {
 }
 
 fn default_session_idle_timeout_secs() -> u64 {
-    7200 // 2 hours
+    0
 }
 
 fn default_cwd() -> String {

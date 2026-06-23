@@ -203,7 +203,7 @@ backend = "claude-code"               # 9 个内置选项 + 通用 "acp"
 [bridge]
 default_cwd = ""                      # 空 = 按 agent 自动隔离
 locale = "zh-CN"                      # "zh-CN" | "en"
-session_idle_timeout_secs = 7200      # 空闲 2 小时后自动重置
+session_idle_timeout_secs = 0         # 0 = 禁用；设 7200 则空闲 2 小时后自动重置
 
 [web]
 enable = true

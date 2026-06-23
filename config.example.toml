@@ -121,8 +121,8 @@ backend = "claude-code"   # "claude-code" | "kimi" | "qoder" | "opencode" | "kir
 default_cwd = ""
 state_dir = "~/.agentline"
 # Seconds of inactivity before the agent session is automatically closed and recreated.
-# 0 = disabled (session persists until /new or process exit). Default: 7200 (2 hours).
-session_idle_timeout_secs = 7200
+# 0 = disabled (session persists until /new or process exit). Default: 0 (disabled).
+session_idle_timeout_secs = 0
 # UI language. "zh-CN" | "en". Default: Chinese.
 locale = "zh-CN"
 # Note: the global auto_approve_all option has been removed. Yolo mode is now
