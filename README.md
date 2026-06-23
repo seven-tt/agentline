@@ -248,10 +248,15 @@ cargo build --release --bin agentline-tray   # System tray
 
 ## Community
 
-QQ Group: **1014152416**
-
 <p align="center">
-  <img src="docs/qq.jpg" width="280" alt="QQ Group QR Code">
+  <img src="docs/group_qq.jpg" width="280" alt="QQ Group QR Code">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/group_telegram.jpg" width="280" alt="Telegram Group QR Code">
+</p>
+<p align="center">
+  QQ Group: <strong>1014152416</strong>
+  &nbsp;&nbsp;|&nbsp;&nbsp;
+  Telegram Group
 </p>
 
 ## License

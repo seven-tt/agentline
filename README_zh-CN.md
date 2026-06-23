@@ -248,10 +248,15 @@ cargo build --release --bin agentline-tray   # 系统托盘
 
 ## 社区
 
-QQ 交流群：**1014152416**
-
 <p align="center">
-  <img src="docs/qq.jpg" width="280" alt="QQ 群二维码">
+  <img src="docs/group_qq.jpg" width="280" alt="QQ 群二维码">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/group_telegram.jpg" width="280" alt="Telegram 群二维码">
+</p>
+<p align="center">
+  QQ 交流群：<strong>1014152416</strong>
+  &nbsp;&nbsp;|&nbsp;&nbsp;
+  Telegram 群
 </p>
 
 ## License
