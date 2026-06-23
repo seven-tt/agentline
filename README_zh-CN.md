@@ -246,6 +246,14 @@ cargo build --release --bin agentline-tray   # 系统托盘
 - [acp-cli](https://github.com/motosan-dev/acp-cli) — 架构设计参考
 - [openclaw-weixin](https://github.com/hao-ji-xing/openclaw-weixin) — iLink Bot API 协议参考
 
+## 社区
+
+QQ 交流群：**1014152416**
+
+<p align="center">
+  <img src="docs/qq.jpg" width="280" alt="QQ 群二维码">
+</p>
+
 ## License
 
 基于 [Apache License, Version 2.0](LICENSE-APACHE) 授权。

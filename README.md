@@ -246,6 +246,14 @@ cargo build --release --bin agentline-tray   # System tray
 - [acp-cli](https://github.com/motosan-dev/acp-cli) — architecture inspiration
 - [openclaw-weixin](https://github.com/hao-ji-xing/openclaw-weixin) — iLink Bot API protocol reference
 
+## Community
+
+QQ Group: **1014152416**
+
+<p align="center">
+  <img src="docs/qq.jpg" width="280" alt="QQ Group QR Code">
+</p>
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE-APACHE).
