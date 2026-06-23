@@ -158,6 +158,7 @@ fn run_tray() -> Result<()> {
         Err(e) => tracing::warn!(error=%e, "could not start daemon"),
     }
 
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut event_loop = EventLoopBuilder::new().build();
 
     // Must be set on tao's own EventLoop before `run()` — tao resets the
