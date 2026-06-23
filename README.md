@@ -22,10 +22,15 @@ Agentline is a high-performance Rust bridge that turns any instant messaging pla
 |  WeChat    |     |           |     |  Claude Code     |
 |  DingTalk  +---->+  Bridge   +---->+  Gemini CLI      |
 |  Feishu    |     |  (Actor)  |     |  Kimi / Qoder    |
-|  Telegram  |     |           |     |  Hermes / Kiro   |
-+------------+     +-----------+     +------------------+
- 4 IM adapters                        9 backends + custom
- WebSocket / polling                  ACP protocol
+|  Telegram  |     |     |     |     |  Hermes / Kiro   |
++------------+     +--+--+--+-+     +------------------+
+ 4 IM adapters        |     |         9 backends + custom
+ WebSocket / polling  |     |         ACP protocol
+                      v     v
+               +------+  +-------+
+               | MCP  |  | Iroh  |
+               |Server|  |  P2P  |
+               +------+  +-------+
 ```
 
 ## Why Agentline?
@@ -41,12 +46,12 @@ Agentline is a high-performance Rust bridge that turns any instant messaging pla
 
 ### IM Adapters
 
-| Platform | Protocol | Status |
-|----------|----------|--------|
-| **WeChat** | iLink Personal Bot API | Stable |
-| **DingTalk** | Stream API (WebSocket) | Stable |
-| **Feishu (Lark)** | WebSocket long-connection + REST API | Stable |
-| **Telegram** | Bot API (long polling) | Stable |
+| Platform | Protocol | Status | Media Support |
+|----------|----------|--------|---------------|
+| **WeChat** | iLink Personal Bot API | Stable | Text, image, voice, file |
+| **DingTalk** | Stream API (WebSocket) | Stable | Text, image, voice, video, file |
+| **Feishu (Lark)** | WebSocket long-connection + REST API | Stable | Text, image |
+| **Telegram** | Bot API (long polling) | Stable | Text, photo, voice, audio, video, file |
 
 ### Agent Backends
 
@@ -96,23 +101,29 @@ For WeChat, run `agentline login` first to scan the QR code.
 ```
 crates/
 ├── bridge/          Core runtime: actor, message routing, permissions, i18n
-├── cli/             Binary entry point, config, service management, web dashboard
+├── cli/             Binary entry point, config, service management, web dashboard, MCP server
+├── permission/      Tiered permission engine (shell commands + MCP tools)
+├── tray/            Cross-platform system tray app with auto-update
+├── telegramify/     Markdown → Telegram MarkdownV2 converter
 ├── im/
 │   ├── core/        Shared IM traits (ImAdapter, InboundHandler)
 │   ├── wechat/      iLink Bot API adapter
-│   ├── dingtalk/    DingTalk Stream (WebSocket) adapter
-│   ├── feishu/      Feishu WebSocket long-connection adapter
-│   └── telegram/    Telegram Bot API (long-polling) adapter
-└── agent/
-    ├── acp/         Generic ACP transport (shared by 8 backends)
-    ├── claude-code/ Claude Code = ACP + env/settings plumbing
-    ├── kimi/        Kimi = ACP + CLI launch config
-    ├── qoder/       Qoder = ACP + personal access token
-    ├── opencode/    OpenCode = ACP + CLI launch config
-    ├── hermes/      Hermes = ACP + OAuth login
-    ├── kiro/        Kiro = ACP + multi-agent routing
-    ├── gemini/      Gemini = ACP + CLI launch config
-    └── codex/       Codex = JSON-RPC via official SDK
+│   ├── dingtalk/    DingTalk Stream (WebSocket) adapter + media download
+│   ├── feishu/      Feishu WebSocket long-connection adapter + media download
+│   └── telegram/    Telegram Bot API (long-polling) adapter + media download
+├── agent/
+│   ├── acp/         Generic ACP transport (shared by 8 backends)
+│   ├── claude-code/ Claude Code = ACP + env/settings plumbing
+│   ├── kimi/        Kimi = ACP + CLI launch config
+│   ├── qoder/       Qoder = ACP + personal access token
+│   ├── opencode/    OpenCode = ACP + CLI launch config
+│   ├── hermes/      Hermes = ACP + OAuth login
+│   ├── kiro/        Kiro = ACP + multi-agent routing
+│   ├── gemini/      Gemini = ACP + CLI launch config
+│   └── codex/       Codex = JSON-RPC via official SDK
+└── transport/
+    ├── core/        Multi-connection transport layer (TCP/Unix socket)
+    └── iroh/        Iroh P2P transport for NAT-traversal remote access
 ```
 
 ### Bridge Runtime
@@ -148,6 +159,7 @@ The actor multiplexes IM inbound messages and internal commands in a `tokio::sel
 
 ### Permission & Security
 - Interactive permission delegation: agent asks → user confirms in chat (`y` / `n` / `s` for session-grant)
+- Tiered MCP tool permissions: agentline tools auto-approve, third-party tools require confirmation
 - `/yolo` mode for trusted sessions, auto-resets on new session
 - User whitelist per IM platform
 
@@ -159,8 +171,10 @@ The actor multiplexes IM inbound messages and internal commands in a `tokio::sel
 
 ### Operations
 - Background service via launchd (macOS) with auto-start/restart
-- Built-in web dashboard (status, logs, WeChat QR login)
-- Cross-platform system tray app
+- Built-in web dashboard (status, logs, WeChat QR login, agent config, P2P transport)
+- Built-in MCP server (`POST /mcp`) exposing project tools to agents
+- Cross-platform system tray app with in-app auto-update
+- Iroh P2P transport for NAT-traversal remote access (no port forwarding needed)
 - Structured logging with configurable levels
 - Proxy injection for LAN/corporate environments (RFC-1918 auto-bypass)
 
