@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "agentline"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agent-client-protocol",
  "agentline-agent-acp",
@@ -120,7 +120,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-acp"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agent-client-protocol",
  "agentline-bridge",
@@ -140,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-claude-code"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -158,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-codex"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agentline-bridge",
  "anyhow",
@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-gemini"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-hermes"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-kimi"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-kiro"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-opencode"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-agent-qoder"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agentline-agent-acp",
  "agentline-bridge",
@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-bridge"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agent-client-protocol",
  "agentline-permission",
@@ -312,7 +312,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-im-core"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agent-client-protocol",
  "agentline-bridge",
@@ -326,10 +326,11 @@ dependencies = [
 
 [[package]]
 name = "agentline-im-dingtalk"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agentline-im-core",
  "async-trait",
+ "dirs 5.0.1",
  "futures",
  "reqwest 0.12.28",
  "rust-i18n",
@@ -340,12 +341,13 @@ dependencies = [
  "tokio-stream",
  "tokio-tungstenite 0.24.0",
  "tracing",
+ "ulid",
  "url",
 ]
 
 [[package]]
 name = "agentline-im-feishu"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agentline-im-core",
  "async-trait",
@@ -365,10 +367,11 @@ dependencies = [
 
 [[package]]
 name = "agentline-im-telegram"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agentline-im-core",
  "async-trait",
+ "dirs 5.0.1",
  "reqwest 0.12.28",
  "rust-i18n",
  "serde",
@@ -377,11 +380,12 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "ulid",
 ]
 
 [[package]]
 name = "agentline-im-wechat"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "aes",
  "agentline-im-core",
@@ -405,14 +409,14 @@ dependencies = [
 
 [[package]]
 name = "agentline-permission"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "tokio",
 ]
 
 [[package]]
 name = "agentline-transport"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agentline-bridge",
  "async-trait",
@@ -427,7 +431,7 @@ dependencies = [
 
 [[package]]
 name = "agentline-transport-iroh"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agentline-bridge",
  "agentline-transport",
@@ -440,16 +444,13 @@ dependencies = [
 
 [[package]]
 name = "agentline-tray"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "agentline-bridge",
  "anyhow",
  "clap",
  "dirs 5.0.1",
  "libc",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
  "resvg",
  "serde_json",
  "tao",
@@ -3579,18 +3580,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
 dependencies = [
  "bitflags 2.11.1",
- "block2",
- "libc",
  "objc2",
- "objc2-cloud-kit",
- "objc2-core-data",
  "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-core-image",
- "objc2-core-text",
- "objc2-core-video",
  "objc2-foundation",
- "objc2-quartz-core",
 ]
 
 [[package]]
@@ -3610,7 +3602,6 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b402a653efbb5e82ce4df10683b6b28027616a2715e90009947d50b8dd298fa"
 dependencies = [
- "bitflags 2.11.1",
  "objc2",
  "objc2-foundation",
 ]
@@ -3671,19 +3662,6 @@ dependencies = [
  "objc2",
  "objc2-core-foundation",
  "objc2-core-graphics",
-]
-
-[[package]]
-name = "objc2-core-video"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d425caf1df73233f29fd8a5c3e5edbc30d2d4307870f802d18f00d83dc5141a6"
-dependencies = [
- "bitflags 2.11.1",
- "objc2",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-io-surface",
 ]
 
 [[package]]
@@ -5405,7 +5383,7 @@ checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
 name = "telegramify-markdown"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "pulldown-cmark",
 ]

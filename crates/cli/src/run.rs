@@ -512,7 +512,7 @@ fn resolve_https_proxy(proxy: &ProxySection) -> String {
     }
 }
 
-fn proxy_env(proxy: &ProxySection) -> Vec<(String, String)> {
+pub(crate) fn proxy_env(proxy: &ProxySection) -> Vec<(String, String)> {
     let mut pairs: Vec<(String, String)> = Vec::new();
     let shell = agentline_bridge::proxy::detect_shell_proxy();
 

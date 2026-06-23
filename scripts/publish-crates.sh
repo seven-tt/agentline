@@ -4,7 +4,7 @@ set -euo pipefail
 REPO="https://github.com/seven-tt/agentline.git"
 WORK_DIR="/tmp/agentline-publish"
 DRY_RUN="${DRY_RUN:-}"
-SLEEP="${PUBLISH_SLEEP:-20}"
+SLEEP="${PUBLISH_SLEEP:-60}"
 
 # ── resolve tag ─────────────────────────────────────────────────
 

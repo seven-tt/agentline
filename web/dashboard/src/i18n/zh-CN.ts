@@ -207,5 +207,9 @@ export default {
     available: '有新版 v{version}',
     updating: '更新中...',
     click_update: '点击更新',
+    downloading: '下载中 {percent}%',
+    installing: '安装中...',
+    done: '更新完成',
+    failed: '更新失败',
   },
 }

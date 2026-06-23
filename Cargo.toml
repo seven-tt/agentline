@@ -25,7 +25,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.2"
+version = "1.0.3"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/seven-tt/agentline"
@@ -73,7 +73,7 @@ qrcode = "0.14"
 
 # im-telegram markdown
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
-telegramify-markdown = { path = "crates/telegramify", version = "1.0.2" }
+telegramify-markdown = { path = "crates/telegramify", version = "1.0.3" }
 
 # im-dingtalk
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
@@ -112,22 +112,22 @@ tao = "0.35"
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 
 # internal
-agentline-bridge = { path = "crates/bridge", version = "1.0.2" }
-agentline-im-core = { path = "crates/im/core", version = "1.0.2" }
-agentline-im-wechat = { path = "crates/im/wechat", version = "1.0.2" }
-agentline-im-dingtalk = { path = "crates/im/dingtalk", version = "1.0.2" }
-agentline-im-feishu = { path = "crates/im/feishu", version = "1.0.2" }
-agentline-im-telegram = { path = "crates/im/telegram", version = "1.0.2" }
-agentline-agent-acp = { path = "crates/agent/acp", version = "1.0.2" }
-agentline-agent-claude-code = { path = "crates/agent/claude-code", version = "1.0.2" }
-agentline-agent-codex = { path = "crates/agent/codex", version = "1.0.2" }
-agentline-agent-kimi = { path = "crates/agent/kimi", version = "1.0.2" }
-agentline-agent-qoder = { path = "crates/agent/qoder", version = "1.0.2" }
-agentline-agent-opencode = { path = "crates/agent/opencode", version = "1.0.2" }
-agentline-agent-kiro = { path = "crates/agent/kiro", version = "1.0.2" }
-agentline-agent-gemini = { path = "crates/agent/gemini", version = "1.0.2" }
-agentline-agent-hermes = { path = "crates/agent/hermes", version = "1.0.2" }
-agentline-permission = { path = "crates/permission", version = "1.0.2" }
+agentline-bridge = { path = "crates/bridge", version = "1.0.3" }
+agentline-im-core = { path = "crates/im/core", version = "1.0.3" }
+agentline-im-wechat = { path = "crates/im/wechat", version = "1.0.3" }
+agentline-im-dingtalk = { path = "crates/im/dingtalk", version = "1.0.3" }
+agentline-im-feishu = { path = "crates/im/feishu", version = "1.0.3" }
+agentline-im-telegram = { path = "crates/im/telegram", version = "1.0.3" }
+agentline-agent-acp = { path = "crates/agent/acp", version = "1.0.3" }
+agentline-agent-claude-code = { path = "crates/agent/claude-code", version = "1.0.3" }
+agentline-agent-codex = { path = "crates/agent/codex", version = "1.0.3" }
+agentline-agent-kimi = { path = "crates/agent/kimi", version = "1.0.3" }
+agentline-agent-qoder = { path = "crates/agent/qoder", version = "1.0.3" }
+agentline-agent-opencode = { path = "crates/agent/opencode", version = "1.0.3" }
+agentline-agent-kiro = { path = "crates/agent/kiro", version = "1.0.3" }
+agentline-agent-gemini = { path = "crates/agent/gemini", version = "1.0.3" }
+agentline-agent-hermes = { path = "crates/agent/hermes", version = "1.0.3" }
+agentline-permission = { path = "crates/permission", version = "1.0.3" }
 
 [profile.release]
 lto = "thin"

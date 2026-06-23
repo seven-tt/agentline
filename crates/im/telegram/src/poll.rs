@@ -143,7 +143,7 @@ async fn process_update(
         return Some(new_offset);
     }
 
-    let kind = parse_message_kind(message);
+    let kind = parse_message_kind(http, api_base, token, message).await;
     let peer = PeerRef {
         user_id: user_id_str,
         group_id: if message.chat.chat_type != "private" {
@@ -170,33 +170,78 @@ async fn process_update(
     Some(new_offset)
 }
 
-fn parse_message_kind(msg: &crate::types::Message) -> MessageKind {
+async fn parse_message_kind(
+    http: &reqwest::Client,
+    api_base: &str,
+    token: &str,
+    msg: &crate::types::Message,
+) -> MessageKind {
     if let Some(ref text) = msg.text {
         return MessageKind::Text { text: text.clone() };
     }
-    if msg.photo.is_some() {
+    let save_dir = crate::media::media_save_dir();
+    if let Some(largest) = msg.photo.as_ref().and_then(|p| p.last()) {
+        let local_path = crate::media::download_file(
+            http,
+            api_base,
+            token,
+            &largest.file_id,
+            "img",
+            None,
+            &save_dir,
+        )
+        .await;
         return MessageKind::Image {
-            local_path: None,
+            local_path,
             caption: msg.caption.clone(),
         };
     }
-    if msg.voice.is_some() {
+    if let Some(ref voice) = msg.voice {
+        let local_path = crate::media::download_file(
+            http,
+            api_base,
+            token,
+            &voice.file_id,
+            "voice",
+            None,
+            &save_dir,
+        )
+        .await;
         return MessageKind::Voice {
             transcript: None,
-            local_path: None,
+            local_path,
         };
     }
-    if msg.video.is_some() {
+    if let Some(ref video) = msg.video {
+        let local_path = crate::media::download_file(
+            http,
+            api_base,
+            token,
+            &video.file_id,
+            "video",
+            None,
+            &save_dir,
+        )
+        .await;
         return MessageKind::Video {
-            local_path: None,
+            local_path,
             caption: msg.caption.clone(),
         };
     }
     if let Some(ref doc) = msg.document {
-        return MessageKind::File {
-            local_path: std::path::PathBuf::new(),
-            name: doc.file_name.clone().unwrap_or_else(|| "file".into()),
-        };
+        let name = doc.file_name.clone().unwrap_or_else(|| "file".into());
+        let local_path = crate::media::download_file(
+            http,
+            api_base,
+            token,
+            &doc.file_id,
+            "file",
+            Some(&name),
+            &save_dir,
+        )
+        .await
+        .unwrap_or_default();
+        return MessageKind::File { local_path, name };
     }
     MessageKind::Text {
         text: "[unsupported message type]".into(),

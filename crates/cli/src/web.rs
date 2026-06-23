@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
 
 use agentline_bridge::{
@@ -29,6 +30,8 @@ pub struct Web {
     bridge: Arc<std::sync::OnceLock<Bridge>>,
     start_time: Instant,
     log_handle: crate::LogReloadHandle,
+    update_progress: Arc<AtomicU8>,
+    update_status: Arc<AtomicU8>,
 }
 
 #[derive(Default)]
@@ -61,6 +64,8 @@ pub fn start(
         bridge: bridge_holder.clone(),
         start_time: Instant::now(),
         log_handle,
+        update_progress: Arc::new(AtomicU8::new(0)),
+        update_status: Arc::new(AtomicU8::new(0)),
     };
 
     let router = Router::new()
@@ -102,6 +107,10 @@ pub fn start(
         // System update
         .route("/api/system/check-update", get(api_system_check_update))
         .route("/api/system/update", post(api_system_update))
+        .route(
+            "/api/system/update-progress",
+            get(api_system_update_progress),
+        )
         // Logs
         .route("/api/logs", get(api_logs))
         .with_state(app_state);
@@ -136,6 +145,20 @@ fn config_path(w: &Web) -> PathBuf {
 fn reload_cfg(w: &Web) -> AppConfig {
     let path = config_path(w);
     AppConfig::load(&path).unwrap_or_else(|_| (*w.cfg).clone())
+}
+
+/// Sets HTTP(S)_PROXY/NO_PROXY on this process so the self-update HTTP
+/// requests (`reqwest::Client::new()`, which reads them implicitly) go
+/// through the same proxy as everything else — falling back to the user's
+/// shell profile when `config.toml` leaves `[proxy]` empty.
+fn apply_proxy_env(proxy: &crate::config::ProxySection) {
+    // Safety: called from request handlers before any concurrent reads of
+    // these vars within this process; reqwest only reads them lazily per-request.
+    unsafe {
+        for (k, v) in crate::run::proxy_env(proxy) {
+            std::env::set_var(k, v);
+        }
+    }
 }
 
 // ─── /api/overview ─────────────────────────────────────────────
@@ -1347,8 +1370,9 @@ struct SystemUpdateOut {
     latest: String,
 }
 
-async fn api_system_check_update(State(_w): State<Web>) -> axum::Json<SystemUpdateOut> {
+async fn api_system_check_update(State(w): State<Web>) -> axum::Json<SystemUpdateOut> {
     let current = env!("CARGO_PKG_VERSION");
+    apply_proxy_env(&reload_cfg(&w).proxy);
     match fetch_latest_version().await {
         Some(tag) => {
             let has = is_newer_version(&tag, current);
@@ -1366,8 +1390,9 @@ async fn api_system_check_update(State(_w): State<Web>) -> axum::Json<SystemUpda
     }
 }
 
-async fn api_system_update(State(_w): State<Web>) -> Response {
+async fn api_system_update(State(w): State<Web>) -> Response {
     let current = env!("CARGO_PKG_VERSION");
+    apply_proxy_env(&reload_cfg(&w).proxy);
 
     let info = match fetch_release_info().await {
         Some(info) if is_newer_version(&info.tag, current) => info,
@@ -1376,13 +1401,35 @@ async fn api_system_update(State(_w): State<Web>) -> Response {
         }
     };
 
+    w.update_progress.store(0, Ordering::Relaxed);
+    w.update_status.store(1, Ordering::Relaxed); // downloading
+
+    let progress = w.update_progress.clone();
+    let status = w.update_status.clone();
     tokio::task::spawn_blocking(move || {
-        if let Err(e) = do_system_update(&info) {
+        if let Err(e) = do_system_update(&info, &progress, &status) {
             tracing::error!(error=%e, "system update failed");
+            status.store(4, Ordering::Relaxed); // error
         }
     });
 
     (StatusCode::ACCEPTED, "updating").into_response()
+}
+
+async fn api_system_update_progress(State(w): State<Web>) -> axum::Json<serde_json::Value> {
+    let status_val = w.update_status.load(Ordering::Relaxed);
+    let percent = w.update_progress.load(Ordering::Relaxed);
+    let status_str = match status_val {
+        1 => "downloading",
+        2 => "installing",
+        3 => "done",
+        4 => "error",
+        _ => "idle",
+    };
+    axum::Json(serde_json::json!({
+        "status": status_str,
+        "percent": percent,
+    }))
 }
 
 struct ReleaseDownloadInfo {
@@ -1415,16 +1462,26 @@ async fn fetch_release_info() -> Option<ReleaseDownloadInfo> {
     let json: serde_json::Value = resp.json().await.ok()?;
     let tag = json.get("tag_name")?.as_str()?.to_string();
 
-    let target = if cfg!(target_arch = "aarch64") {
-        "aarch64-apple-darwin"
+    let (target, ext) = if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "aarch64") {
+            ("mac-arm64", ".dmg")
+        } else {
+            ("mac-x64", ".dmg")
+        }
+    } else if cfg!(target_os = "linux") {
+        if cfg!(target_arch = "aarch64") {
+            ("linux-arm64", ".deb")
+        } else {
+            ("linux-x64", ".deb")
+        }
     } else {
-        "x86_64-apple-darwin"
+        ("win-x64", "-setup.exe")
     };
 
     let assets = json.get("assets")?.as_array()?;
     let asset_url = assets.iter().find_map(|a| {
         let name = a.get("name")?.as_str()?;
-        if name.contains(target) && name.ends_with(".zip") {
+        if name.contains(target) && name.ends_with(ext) {
             a.get("browser_download_url")?
                 .as_str()
                 .map(|s| s.to_string())
@@ -1458,42 +1515,110 @@ fn is_newer_version(remote_tag: &str, local: &str) -> bool {
     false
 }
 
-fn do_system_update(info: &ReleaseDownloadInfo) -> anyhow::Result<()> {
+fn do_system_update(
+    info: &ReleaseDownloadInfo,
+    progress: &Arc<AtomicU8>,
+    status: &Arc<AtomicU8>,
+) -> anyhow::Result<()> {
     use std::process::Command;
 
-    let tmp_zip = std::path::Path::new("/tmp/agentline-update.zip");
+    let tmp_dmg = std::path::Path::new("/tmp/agentline-update.dmg");
     let tmp_dir = std::path::Path::new("/tmp/agentline-update");
+    let tmp_mount = std::path::Path::new("/tmp/agentline-mount");
 
-    let _ = std::fs::remove_file(tmp_zip);
+    let _ = std::fs::remove_file(tmp_dmg);
     let _ = std::fs::remove_dir_all(tmp_dir);
+    let _ = Command::new("hdiutil")
+        .args(["detach", "/tmp/agentline-mount", "-quiet", "-force"])
+        .status();
 
     tracing::info!(tag=%info.tag, "downloading update");
-    let status = Command::new("curl")
-        .args(["-fsSL", "-o", "/tmp/agentline-update.zip", &info.asset_url])
+    status.store(1, Ordering::Relaxed);
+
+    let rt = tokio::runtime::Handle::try_current().ok().and_then(|h| {
+        tokio::task::block_in_place(|| {
+            h.block_on(async {
+                let client = reqwest::Client::new();
+                client
+                    .get(&info.asset_url)
+                    .header("User-Agent", "agentline")
+                    .send()
+                    .await
+                    .ok()
+            })
+        })
+    });
+
+    let resp = rt.ok_or_else(|| anyhow::anyhow!("download request failed"))?;
+    let content_len = resp.content_length().unwrap_or(0);
+    let mut downloaded: u64 = 0;
+    let mut last_pct: u8 = 0;
+
+    let mut file = std::fs::File::create(tmp_dmg)?;
+    let mut resp = resp;
+    loop {
+        let chunk = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(resp.chunk())
+        })?;
+        match chunk {
+            Some(bytes) => {
+                std::io::Write::write_all(&mut file, &bytes)?;
+                downloaded += bytes.len() as u64;
+                if content_len > 0 {
+                    let pct = (downloaded * 100 / content_len).min(100) as u8;
+                    if pct != last_pct {
+                        last_pct = pct;
+                        progress.store(pct, Ordering::Relaxed);
+                    }
+                }
+            }
+            None => break,
+        }
+    }
+    drop(file);
+
+    tracing::info!("installing update");
+    status.store(2, Ordering::Relaxed);
+
+    // Mount DMG
+    let cmd_status = Command::new("hdiutil")
+        .args([
+            "attach",
+            tmp_dmg.to_str().unwrap(),
+            "-nobrowse",
+            "-quiet",
+            "-mountpoint",
+            tmp_mount.to_str().unwrap(),
+        ])
         .status()?;
-    if !status.success() {
-        anyhow::bail!("download failed");
+    if !cmd_status.success() {
+        anyhow::bail!("hdiutil attach failed");
     }
 
-    tracing::info!("extracting update");
+    // Copy .app from mounted DMG
     std::fs::create_dir_all(tmp_dir)?;
-    let status = Command::new("unzip")
+    let cp_status = Command::new("cp")
         .args([
-            "-o",
-            "/tmp/agentline-update.zip",
-            "-d",
-            "/tmp/agentline-update",
+            "-R",
+            tmp_mount
+                .join("AgentlineTray.app")
+                .to_str()
+                .unwrap_or_default(),
+            tmp_dir.to_str().unwrap(),
         ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
         .status()?;
-    if !status.success() {
-        anyhow::bail!("unzip failed");
+
+    let _ = Command::new("hdiutil")
+        .args(["detach", tmp_mount.to_str().unwrap(), "-quiet"])
+        .status();
+
+    if !cp_status.success() {
+        anyhow::bail!("cp from DMG failed");
     }
 
     let extracted_app = tmp_dir.join("AgentlineTray.app");
     if !extracted_app.exists() {
-        anyhow::bail!("AgentlineTray.app not found in zip");
+        anyhow::bail!("AgentlineTray.app not found in DMG");
     }
 
     let current_exe = std::env::current_exe()?;
@@ -1519,9 +1644,10 @@ fn do_system_update(info: &ReleaseDownloadInfo) -> anyhow::Result<()> {
         return Err(e.into());
     }
     let _ = std::fs::remove_dir_all(&backup);
-    let _ = std::fs::remove_file(tmp_zip);
+    let _ = std::fs::remove_file(tmp_dmg);
     let _ = std::fs::remove_dir_all(tmp_dir);
 
+    status.store(3, Ordering::Relaxed);
     tracing::info!("update installed, restarting");
     let new_exe = app_parent
         .join(&app_name)
