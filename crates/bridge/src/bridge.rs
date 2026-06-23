@@ -36,7 +36,7 @@ impl Default for BridgeConfig {
         Self {
             default_cwd: PathBuf::from("."),
             typing_interval: Duration::from_millis(5000),
-            session_idle_timeout: Duration::from_secs(2 * 3600),
+            session_idle_timeout: Duration::ZERO,
             agent_name: "agent".into(),
             projects: Vec::new(),
             session_base_dir: None,

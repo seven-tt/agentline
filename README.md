@@ -203,7 +203,7 @@ backend = "claude-code"               # 9 built-in options + generic "acp"
 [bridge]
 default_cwd = ""                      # empty = auto-isolate per agent
 locale = "zh-CN"                      # "zh-CN" | "en"
-session_idle_timeout_secs = 7200      # auto-reset after 2h idle
+session_idle_timeout_secs = 0         # 0 = disabled; set e.g. 7200 for 2h auto-reset
 
 [web]
 enable = true
@@ -248,10 +248,15 @@ cargo build --release --bin agentline-tray   # System tray
 
 ## Community
 
-QQ Group: **1014152416**
-
 <p align="center">
-  <img src="docs/qq.jpg" width="280" alt="QQ Group QR Code">
+  <img src="docs/group_qq.jpg" width="280" alt="QQ Group QR Code">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/group_telegram.jpg" width="280" alt="Telegram Group QR Code">
+</p>
+<p align="center">
+  QQ Group: <strong>1014152416</strong>
+  &nbsp;&nbsp;|&nbsp;&nbsp;
+  Telegram Group
 </p>
 
 ## License

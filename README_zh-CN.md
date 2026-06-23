@@ -203,7 +203,7 @@ backend = "claude-code"               # 9 个内置选项 + 通用 "acp"
 [bridge]
 default_cwd = ""                      # 空 = 按 agent 自动隔离
 locale = "zh-CN"                      # "zh-CN" | "en"
-session_idle_timeout_secs = 7200      # 空闲 2 小时后自动重置
+session_idle_timeout_secs = 0         # 0 = 禁用；设 7200 则空闲 2 小时后自动重置
 
 [web]
 enable = true
@@ -248,10 +248,15 @@ cargo build --release --bin agentline-tray   # 系统托盘
 
 ## 社区
 
-QQ 交流群：**1014152416**
-
 <p align="center">
-  <img src="docs/qq.jpg" width="280" alt="QQ 群二维码">
+  <img src="docs/group_qq.jpg" width="280" alt="QQ 群二维码">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/group_telegram.jpg" width="280" alt="Telegram 群二维码">
+</p>
+<p align="center">
+  QQ 交流群：<strong>1014152416</strong>
+  &nbsp;&nbsp;|&nbsp;&nbsp;
+  Telegram 群
 </p>
 
 ## License
