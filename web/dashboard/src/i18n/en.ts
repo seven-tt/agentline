@@ -207,5 +207,9 @@ export default {
     available: 'New version v{version}',
     updating: 'Updating...',
     click_update: 'Click to update',
+    downloading: 'Downloading {percent}%',
+    installing: 'Installing...',
+    done: 'Updated',
+    failed: 'Update failed',
   },
 }

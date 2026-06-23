@@ -13,8 +13,8 @@ categories.workspace = true
 readme.workspace = true
 
 [dependencies]
-agentline-bridge = { path = "../../bridge", version = "1.0.2" }
-agentline-transport = { path = "../core", version = "1.0.2" }
+agentline-bridge = { path = "../../bridge", version = "1.0.3" }
+agentline-transport = { path = "../core", version = "1.0.3" }
 iroh = "1"
 hex = "0.4"
 async-trait = { workspace = true }

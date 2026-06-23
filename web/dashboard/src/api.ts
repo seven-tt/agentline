@@ -86,4 +86,5 @@ export const api = {
   // System update
   checkSystemUpdate: () => get<{ has_update: boolean; current: string; latest: string }>('/api/system/check-update'),
   triggerSystemUpdate: () => post('/api/system/update'),
+  getUpdateProgress: () => get<{ status: string; percent: number }>('/api/system/update-progress'),
 }

@@ -79,6 +79,13 @@ pub struct Video {
     pub duration: i32,
 }
 
+// ─── getFile ───────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct FileInfo {
+    pub file_path: Option<String>,
+}
+
 // ─── sendMessage / editMessageText ────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -175,6 +182,14 @@ mod tests {
         let photos = msg.photo.unwrap();
         assert_eq!(photos.len(), 2);
         assert_eq!(photos[1].file_id, "large");
+    }
+
+    #[test]
+    fn deserialize_get_file_resp() {
+        let json = r#"{"ok": true, "result": {"file_path": "voice/file_0.oga"}}"#;
+        let resp: ApiResponse<FileInfo> = serde_json::from_str(json).unwrap();
+        assert!(resp.ok);
+        assert_eq!(resp.result.unwrap().file_path.unwrap(), "voice/file_0.oga");
     }
 
     #[test]

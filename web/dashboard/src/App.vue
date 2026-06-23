@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, provide, onMounted } from 'vue'
+import { ref, computed, watch, provide, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ViewName } from './types'
 import { useStatus } from './composables/useStatus'
@@ -61,6 +61,9 @@ async function doRestart() {
 const updateAvailable = ref(false)
 const latestVersion = ref('')
 const updating = ref(false)
+const updateStatus = ref('idle')
+const updatePercent = ref(0)
+let progressTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(async () => {
   try {
@@ -72,12 +75,41 @@ onMounted(async () => {
   } catch { /* ignore */ }
 })
 
+onUnmounted(() => {
+  if (progressTimer) clearInterval(progressTimer)
+})
+
+function startProgressPolling() {
+  if (progressTimer) clearInterval(progressTimer)
+  progressTimer = setInterval(async () => {
+    try {
+      const res = await api.getUpdateProgress()
+      updateStatus.value = res.status
+      updatePercent.value = res.percent
+      if (res.status === 'done' || res.status === 'error') {
+        if (progressTimer) clearInterval(progressTimer)
+        progressTimer = null
+        if (res.status === 'error') {
+          updating.value = false
+          updateStatus.value = 'idle'
+        }
+      }
+    } catch { /* ignore */ }
+  }, 1000)
+}
+
 async function doUpdate() {
   if (updating.value) return
   updating.value = true
+  updateStatus.value = 'downloading'
+  updatePercent.value = 0
   try {
     await api.triggerSystemUpdate()
-  } catch { /* ignore */ }
+    startProgressPolling()
+  } catch {
+    updating.value = false
+    updateStatus.value = 'idle'
+  }
 }
 
 const navItems: { id: ViewName; labelKey: string; descKey: string; icon: string }[] = [
@@ -139,7 +171,15 @@ const currentComponent = computed(() => viewComponents[view.value])
           :title="$t('update.click_update')"
           @click="doUpdate"
         >{{ $t('update.available', { version: latestVersion }) }}</span>
-        <span v-if="updating" class="update-badge updating">{{ $t('update.updating') }}</span>
+        <template v-if="updating">
+          <span v-if="updateStatus === 'installing'" class="update-badge updating">{{ $t('update.installing') }}</span>
+          <span v-else-if="updateStatus === 'done'" class="update-badge done">{{ $t('update.done') }}</span>
+          <span v-else-if="updateStatus === 'error'" class="update-badge error">{{ $t('update.failed') }}</span>
+          <span v-else class="update-badge updating">
+            {{ $t('update.downloading', { percent: updatePercent }) }}
+            <span class="progress-bar"><span class="progress-fill" :style="{ width: updatePercent + '%' }"></span></span>
+          </span>
+        </template>
       </div>
     </aside>
 
@@ -351,6 +391,33 @@ body {
 .update-badge.updating {
   background: #555;
   cursor: default;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.update-badge.done {
+  background: #43a047;
+  cursor: default;
+}
+.update-badge.error {
+  background: #e53935;
+  cursor: default;
+}
+.progress-bar {
+  display: inline-block;
+  width: 48px;
+  height: 6px;
+  background: rgba(255,255,255,0.2);
+  border-radius: 3px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.progress-fill {
+  display: block;
+  height: 100%;
+  background: #4caf50;
+  border-radius: 3px;
+  transition: width 0.3s ease;
 }
 .status-dot {
   width: 8px;

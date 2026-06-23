@@ -117,10 +117,10 @@ impl Tr {
         }
     }
 
-    fn check_update_new(&self) -> &str {
+    fn check_update_available(&self) -> &str {
         match self.locale {
-            Locale::ZhCN => "检查更新  🆕",
-            Locale::En => "Check for updates  🆕",
+            Locale::ZhCN => "检查更新 🔴",
+            Locale::En => "Check for updates 🔴",
         }
     }
 
@@ -158,16 +158,22 @@ fn run_tray() -> Result<()> {
         Err(e) => tracing::warn!(error=%e, "could not start daemon"),
     }
 
-    #[cfg(target_os = "macos")]
-    hide_from_dock();
+    let mut event_loop = EventLoopBuilder::new().build();
 
-    let event_loop = EventLoopBuilder::new().build();
+    // Must be set on tao's own EventLoop before `run()` — tao resets the
+    // activation policy to Regular when `applicationDidFinishLaunching`
+    // fires, which clobbers any policy set via AppKit directly beforehand.
+    #[cfg(target_os = "macos")]
+    {
+        use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+        event_loop.set_activation_policy(ActivationPolicy::Accessory);
+    }
 
     let menu = Menu::new();
     let status_item = MenuItem::new(tr.status_checking(), false, None);
     let dashboard = MenuItem::new(tr.open_dashboard(), true, None);
     let restart = MenuItem::new(tr.restart_daemon(), true, None);
-    let update_item = MenuItem::new(tr.check_update(), true, None);
+    let update_item = MenuItem::new(tr.check_update(), false, None);
     let sep1 = PredefinedMenuItem::separator();
     let sep2 = PredefinedMenuItem::separator();
     let sep3 = PredefinedMenuItem::separator();
@@ -183,8 +189,8 @@ fn run_tray() -> Result<()> {
         &quit,
     ])?;
 
-    let _tray = TrayIconBuilder::new()
-        .with_icon(make_icon())
+    let tray = TrayIconBuilder::new()
+        .with_icon(make_icon(false))
         .with_icon_as_template(true)
         .with_tooltip("Agentline")
         .with_menu(Box::new(menu))
@@ -238,7 +244,9 @@ fn run_tray() -> Result<()> {
             while let Ok(msg) = update_rx.try_recv() {
                 match msg {
                     UpdateMsg::Available(info) => {
-                        update_item.set_text(tr.check_update_new());
+                        update_item.set_text(tr.check_update_available());
+                        update_item.set_enabled(true);
+                        let _ = tray.set_icon_with_as_template(Some(make_icon(true)), false);
                         pending_release = Some(info);
                     }
                     UpdateMsg::Progress(pct) => {
@@ -252,7 +260,7 @@ fn run_tray() -> Result<()> {
                         do_self_replace_and_restart(&child_event, &auto_restart_event);
                     }
                     UpdateMsg::Failed => {
-                        update_item.set_text(tr.check_update());
+                        update_item.set_text(tr.check_update_available());
                         update_item.set_enabled(true);
                     }
                 }
@@ -273,6 +281,8 @@ fn run_tray() -> Result<()> {
                 } else if ev.id == update_id
                     && let Some(info) = pending_release.clone()
                 {
+                    update_item.set_text(tr.downloading(0));
+                    update_item.set_enabled(false);
                     let tx = update_tx.clone();
                     std::thread::spawn(move || download_and_install(info, tx));
                 }
@@ -593,31 +603,31 @@ fn check_child_and_maybe_restart(
     (DaemonState::NotRunning, None)
 }
 
-// ─── macOS: hide dock icon ───────────────────────────────────────
-
-#[cfg(target_os = "macos")]
-fn hide_from_dock() {
-    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
-    use objc2_foundation::MainThreadMarker;
-
-    if let Some(mtm) = MainThreadMarker::new() {
-        let app = NSApplication::sharedApplication(mtm);
-        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-    } else {
-        tracing::warn!("not on main thread; dock icon may be visible");
-    }
-}
-
 // ─── helpers ────────────────────────────────────────────────────
 
 fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
 
+/// Best-effort check of system-wide dark mode, used to recolor the
+/// non-template badge icon to match the menu bar.
+fn is_dark_menu_bar() -> bool {
+    Command::new("defaults")
+        .args(["read", "-g", "AppleInterfaceStyle"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "Dark")
+        .unwrap_or(false)
+}
+
 /// Rasterize the embedded SVG to a fixed-size RGBA pixmap and hand it
 /// to tray-icon. Rendered at 2× source size (64×64) so the menu bar
 /// looks sharp on retina displays — macOS scales it back down as needed.
-fn make_icon() -> tray_icon::Icon {
+///
+/// `with_badge` overlays a solid red dot in the top-right corner to flag
+/// an available update. Drawn in full color, so callers must pair it with
+/// `set_icon_with_as_template(_, false)` — template-image mode would
+/// otherwise flatten the dot to the menu bar's monochrome tint.
+fn make_icon(with_badge: bool) -> tray_icon::Icon {
     const SVG: &[u8] = include_bytes!("../assets/icon.svg");
     const SIZE: u32 = 64;
 
@@ -633,6 +643,36 @@ fn make_icon() -> tray_icon::Icon {
         resvg::tiny_skia::Transform::from_scale(sx, sy),
         &mut pixmap.as_mut(),
     );
+
+    if with_badge {
+        // The SVG is "black on transparent" by design, meant to be auto-tinted
+        // by `with_icon_as_template`. We can't use template mode here (it would
+        // also flatten the red dot to monochrome), so on a dark menu bar we
+        // manually recolor the glyph to white. Pixels are premultiplied RGBA8;
+        // since alpha is unchanged, white-premultiplied == (a, a, a, a).
+        if is_dark_menu_bar() {
+            for px in pixmap.pixels_mut() {
+                let a = px.alpha();
+                *px = resvg::tiny_skia::PremultipliedColorU8::from_rgba(a, a, a, a)
+                    .expect("valid premultiplied color");
+            }
+        }
+
+        let mut pb = resvg::tiny_skia::PathBuilder::new();
+        pb.push_circle(55.0, 9.0, 7.0);
+        if let Some(path) = pb.finish() {
+            let mut paint = resvg::tiny_skia::Paint::default();
+            paint.set_color_rgba8(255, 59, 48, 255);
+            paint.anti_alias = true;
+            pixmap.fill_path(
+                &path,
+                &paint,
+                resvg::tiny_skia::FillRule::Winding,
+                resvg::tiny_skia::Transform::identity(),
+                None,
+            );
+        }
+    }
 
     tray_icon::Icon::from_rgba(pixmap.take(), SIZE, SIZE).expect("build icon")
 }
@@ -660,6 +700,9 @@ fn apply_proxy_from_config() {
     let path = home().join(".agentline/config.toml");
     let content = std::fs::read_to_string(&path).unwrap_or_default();
     let mut in_proxy = false;
+    let mut cfg_http = String::new();
+    let mut cfg_https = String::new();
+    let mut cfg_no_proxy = String::new();
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
@@ -671,29 +714,48 @@ fn apply_proxy_from_config() {
         }
         if let Some((key, val)) = trimmed.split_once('=') {
             let key = key.trim();
-            let val = val.trim().trim_matches('"');
-            if val.is_empty() {
-                continue;
-            }
-            // Safety: called from a single background thread before any concurrent access.
-            unsafe {
-                match key {
-                    "http" => {
-                        std::env::set_var("http_proxy", val);
-                        std::env::set_var("HTTP_PROXY", val);
-                    }
-                    "https" => {
-                        std::env::set_var("https_proxy", val);
-                        std::env::set_var("HTTPS_PROXY", val);
-                    }
-                    "no_proxy" => {
-                        std::env::set_var("no_proxy", val);
-                        std::env::set_var("NO_PROXY", val);
-                    }
-                    _ => {}
-                }
+            let val = val.trim().trim_matches('"').to_string();
+            match key {
+                "http" => cfg_http = val,
+                "https" => cfg_https = val,
+                "no_proxy" => cfg_no_proxy = val,
+                _ => {}
             }
         }
+    }
+
+    // Empty config field = fall back to whatever the user already has set in
+    // their shell (env or .zshrc/.bashrc via detect_shell_proxy), so the tray
+    // matches the user's ambient proxy setup instead of silently going direct.
+    let shell = agentline_bridge::proxy::detect_shell_proxy();
+    let http_val = if !cfg_http.is_empty() {
+        cfg_http
+    } else {
+        shell.http.clone()
+    };
+    let https_val = if !cfg_https.is_empty() {
+        cfg_https
+    } else if !http_val.is_empty() {
+        http_val.clone()
+    } else if !shell.https.is_empty() {
+        shell.https.clone()
+    } else {
+        shell.http.clone()
+    };
+    let no_proxy_val = agentline_bridge::proxy::build_no_proxy_with(&cfg_no_proxy);
+
+    // Safety: called from a single background thread before any concurrent access.
+    unsafe {
+        if !http_val.is_empty() {
+            std::env::set_var("http_proxy", &http_val);
+            std::env::set_var("HTTP_PROXY", &http_val);
+        }
+        if !https_val.is_empty() {
+            std::env::set_var("https_proxy", &https_val);
+            std::env::set_var("HTTPS_PROXY", &https_val);
+        }
+        std::env::set_var("no_proxy", &no_proxy_val);
+        std::env::set_var("NO_PROXY", &no_proxy_val);
     }
 }
 
@@ -716,16 +778,26 @@ fn check_github_release() -> Option<ReleaseInfo> {
         return None;
     }
 
-    let target = if cfg!(target_arch = "aarch64") {
-        "aarch64-apple-darwin"
+    let (target, ext) = if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "aarch64") {
+            ("mac-arm64", ".dmg")
+        } else {
+            ("mac-x64", ".dmg")
+        }
+    } else if cfg!(target_os = "linux") {
+        if cfg!(target_arch = "aarch64") {
+            ("linux-arm64", ".deb")
+        } else {
+            ("linux-x64", ".deb")
+        }
     } else {
-        "x86_64-apple-darwin"
+        ("win-x64", "-setup.exe")
     };
 
     let assets = json.get("assets")?.as_array()?;
     let asset_url = assets.iter().find_map(|a| {
         let name = a.get("name")?.as_str()?;
-        if name.contains(target) && name.ends_with(".zip") {
+        if name.contains(target) && name.ends_with(ext) {
             a.get("browser_download_url")?
                 .as_str()
                 .map(|s| s.to_string())
@@ -774,12 +846,15 @@ fn do_download_and_install(
     info: &ReleaseInfo,
     tx: &std::sync::mpsc::Sender<UpdateMsg>,
 ) -> Result<()> {
-    let tmp_zip = std::path::Path::new("/tmp/agentline-update.zip");
+    let tmp_dmg = std::path::Path::new("/tmp/agentline-update.dmg");
     let tmp_dir = std::path::Path::new("/tmp/agentline-update");
+    let tmp_mount = std::path::Path::new("/tmp/agentline-mount");
 
-    // Clean previous attempts
-    let _ = std::fs::remove_file(tmp_zip);
+    let _ = std::fs::remove_file(tmp_dmg);
     let _ = std::fs::remove_dir_all(tmp_dir);
+    let _ = Command::new("hdiutil")
+        .args(["detach", "/tmp/agentline-mount", "-quiet", "-force"])
+        .status();
 
     // Download with progress
     let mut resp = ureq::get(&info.asset_url)
@@ -794,7 +869,7 @@ fn do_download_and_install(
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
 
-    let mut file = std::fs::File::create(tmp_zip).context("create tmp zip")?;
+    let mut file = std::fs::File::create(tmp_dmg).context("create tmp dmg")?;
     let mut downloaded: u64 = 0;
     let mut last_pct: u8 = 0;
     let mut buf = [0u8; 65536];
@@ -818,36 +893,56 @@ fn do_download_and_install(
 
     let _ = tx.send(UpdateMsg::Installing);
 
-    // Unzip
-    std::fs::create_dir_all(tmp_dir)?;
-    let status = Command::new("unzip")
+    // Mount DMG
+    let status = Command::new("hdiutil")
         .args([
-            "-o",
-            tmp_zip.to_str().unwrap(),
-            "-d",
-            tmp_dir.to_str().unwrap(),
+            "attach",
+            tmp_dmg.to_str().unwrap(),
+            "-nobrowse",
+            "-quiet",
+            "-mountpoint",
+            tmp_mount.to_str().unwrap(),
         ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
         .status()
-        .context("unzip")?;
+        .context("hdiutil attach")?;
     if !status.success() {
-        bail!("unzip failed");
+        bail!("hdiutil attach failed");
     }
 
-    // Find the .app in extracted dir
+    // Copy .app from mounted DMG
+    std::fs::create_dir_all(tmp_dir)?;
+    let status = Command::new("cp")
+        .args([
+            "-R",
+            tmp_mount
+                .join("AgentlineTray.app")
+                .to_str()
+                .unwrap_or_default(),
+            tmp_dir.to_str().unwrap(),
+        ])
+        .status()
+        .context("cp from dmg")?;
+
+    // Always detach
+    let _ = Command::new("hdiutil")
+        .args(["detach", tmp_mount.to_str().unwrap(), "-quiet"])
+        .status();
+
+    if !status.success() {
+        bail!("cp from DMG failed");
+    }
+
     let extracted_app = tmp_dir.join("AgentlineTray.app");
     if !extracted_app.exists() {
-        bail!("AgentlineTray.app not found in zip");
+        bail!("AgentlineTray.app not found in DMG");
     }
 
     // Determine current .app location
     let current_exe = std::env::current_exe().context("current_exe")?;
-    // .app/Contents/MacOS/agentline-tray → go up 3 levels
     let current_app = current_exe
-        .parent() // MacOS/
-        .and_then(|p| p.parent()) // Contents/
-        .and_then(|p| p.parent()) // .app/
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
         .context("cannot determine .app path")?;
 
     let app_parent = current_app.parent().context("no parent of .app")?;
@@ -856,17 +951,15 @@ fn do_download_and_install(
         .context("no .app filename")?
         .to_owned();
 
-    // Replace: move old aside, move new in, remove old
     let backup = app_parent.join("AgentlineTray.app.bak");
     let _ = std::fs::remove_dir_all(&backup);
     std::fs::rename(current_app, &backup).context("move old .app to backup")?;
     if let Err(e) = std::fs::rename(&extracted_app, app_parent.join(&app_name)) {
-        // Restore backup on failure
         let _ = std::fs::rename(&backup, current_app);
         return Err(e).context("move new .app into place");
     }
     let _ = std::fs::remove_dir_all(&backup);
-    let _ = std::fs::remove_file(tmp_zip);
+    let _ = std::fs::remove_file(tmp_dmg);
     let _ = std::fs::remove_dir_all(tmp_dir);
 
     let _ = tx.send(UpdateMsg::Done);

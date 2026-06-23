@@ -2,7 +2,7 @@
 //! `DataFrame`s, ACKs, dispatches CALLBACK messages to the bridge, and
 //! reconnects with backoff on disconnect.
 
-use crate::auth::{OpenParams, TOPIC_BOT_MESSAGE, open_connection};
+use crate::auth::{OpenParams, TOPIC_BOT_MESSAGE, TokenManager, open_connection};
 use crate::error::{Error, Result};
 use crate::types::{BotCallback, DataFrame, DataFrameResponse};
 use agentline_im_core::parse_inbound;
@@ -57,9 +57,26 @@ pub fn spawn_stream_with(
 }
 
 async fn run_loop(cfg: StreamConfig, tx: mpsc::Sender<SourceMessage>, webhooks: WebhookCache) {
+    let media_http = reqwest::Client::new();
+    let media_token_mgr = match TokenManager::new(
+        cfg.open.client_id.clone(),
+        cfg.open.client_secret.clone(),
+    )
+    .await
+    {
+        Ok(mgr) => {
+            let _refresh_handle = mgr.clone().spawn_refresh();
+            Some(mgr)
+        }
+        Err(e) => {
+            tracing::warn!(error=%e, "dingtalk: media TokenManager init failed; inbound media downloads disabled");
+            None
+        }
+    };
+
     let mut backoff = RECONNECT_MIN;
     loop {
-        match run_once(&cfg, &tx, &webhooks).await {
+        match run_once(&cfg, &tx, &webhooks, &media_http, media_token_mgr.as_ref()).await {
             Ok(()) => {
                 tracing::info!("dingtalk: stream connection closed cleanly; reconnecting");
                 backoff = RECONNECT_MIN;
@@ -77,6 +94,8 @@ async fn run_once(
     cfg: &StreamConfig,
     tx: &mpsc::Sender<SourceMessage>,
     webhooks: &WebhookCache,
+    media_http: &reqwest::Client,
+    media_token_mgr: Option<&TokenManager>,
 ) -> Result<()> {
     let endpoint = open_connection(&cfg.open).await?;
     let url = format!("{}?ticket={}", endpoint.endpoint, endpoint.ticket);
@@ -112,7 +131,16 @@ async fn run_once(
                         // Dispatch.
                         match frame.kind.as_str() {
                             "CALLBACK" if frame.topic() == TOPIC_BOT_MESSAGE => {
-                                if let Err(e) = handle_callback(&frame.data, cfg, tx, webhooks).await {
+                                if let Err(e) = handle_callback(
+                                    &frame.data,
+                                    cfg,
+                                    tx,
+                                    webhooks,
+                                    media_http,
+                                    media_token_mgr,
+                                )
+                                .await
+                                {
                                     tracing::warn!(error=%e, "dingtalk: handle_callback failed");
                                 }
                             }
@@ -162,6 +190,8 @@ async fn handle_callback(
     cfg: &StreamConfig,
     tx: &mpsc::Sender<SourceMessage>,
     webhooks: &WebhookCache,
+    media_http: &reqwest::Client,
+    media_token_mgr: Option<&TokenManager>,
 ) -> Result<()> {
     let cb: BotCallback =
         serde_json::from_str(data).map_err(|e| Error::Parse(format!("bot callback: {e}")))?;
@@ -179,18 +209,79 @@ async fn handle_callback(
             .insert(cb.sender_staff_id.clone(), cb.session_webhook.clone());
     }
 
-    // Currently only text messages are forwarded; richText / image / audio
-    // need separate handling that we don't ship yet.
-    let kind = if cb.msgtype == "text" {
-        let content = cb
-            .text
-            .as_ref()
-            .map(|t| t.content.clone())
-            .unwrap_or_default();
-        MessageKind::Text { text: content }
-    } else {
-        tracing::debug!(msgtype=%cb.msgtype, "dingtalk: unsupported msgtype");
-        return Ok(());
+    let robot_code = &cfg.open.client_id;
+    let kind = match cb.msgtype.as_str() {
+        "text" => {
+            let content = cb
+                .text
+                .as_ref()
+                .map(|t| t.content.clone())
+                .unwrap_or_default();
+            MessageKind::Text { text: content }
+        }
+        "picture" => {
+            let download_code = cb
+                .content
+                .as_ref()
+                .map(|c| c.download_code.as_str())
+                .unwrap_or_default();
+            let local_path = download_inbound_media(
+                media_http,
+                media_token_mgr,
+                robot_code,
+                download_code,
+                "img",
+            )
+            .await;
+            MessageKind::Image {
+                local_path,
+                caption: None,
+            }
+        }
+        "audio" => {
+            let download_code = cb
+                .content
+                .as_ref()
+                .map(|c| c.download_code.as_str())
+                .unwrap_or_default();
+            let transcript = cb.content.as_ref().and_then(|c| c.recognition.clone());
+            let local_path = download_inbound_media(
+                media_http,
+                media_token_mgr,
+                robot_code,
+                download_code,
+                "voice",
+            )
+            .await;
+            MessageKind::Voice {
+                transcript,
+                local_path,
+            }
+        }
+        "richText" => {
+            let segments = cb
+                .content
+                .as_ref()
+                .and_then(|c| c.rich_text.clone())
+                .unwrap_or_default();
+            let text: String = segments.iter().filter_map(|s| s.text.as_deref()).collect();
+            let pic_code = segments.iter().find_map(|s| s.download_code.as_deref());
+            if let Some(code) = pic_code {
+                let local_path =
+                    download_inbound_media(media_http, media_token_mgr, robot_code, code, "img")
+                        .await;
+                MessageKind::Image {
+                    local_path,
+                    caption: (!text.is_empty()).then_some(text),
+                }
+            } else {
+                MessageKind::Text { text }
+            }
+        }
+        other => {
+            tracing::debug!(msgtype=%other, "dingtalk: unsupported msgtype");
+            return Ok(());
+        }
     };
 
     let opaque = serde_json::json!({
@@ -216,4 +307,28 @@ async fn handle_callback(
         .await
         .map_err(|_| Error::other("inbound channel closed"))?;
     Ok(())
+}
+
+/// Resolves a non-empty `download_code` to a saved local file, or `None` if
+/// there's nothing to download or the media `TokenManager` failed to init.
+async fn download_inbound_media(
+    http: &reqwest::Client,
+    token_mgr: Option<&TokenManager>,
+    robot_code: &str,
+    download_code: &str,
+    prefix: &str,
+) -> Option<std::path::PathBuf> {
+    if download_code.is_empty() {
+        return None;
+    }
+    let mgr = token_mgr?;
+    crate::media::download_media(
+        http,
+        mgr,
+        robot_code,
+        download_code,
+        prefix,
+        &crate::media::media_save_dir(),
+    )
+    .await
 }

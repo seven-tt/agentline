@@ -121,6 +121,9 @@ pub struct BotCallback {
     /// Present for text messages. The interesting fields elsewhere are dynamic.
     #[serde(default)]
     pub text: Option<TextContent>,
+    /// Present for picture / audio / richText messages.
+    #[serde(default)]
+    pub content: Option<MediaContent>,
     #[serde(default, rename = "createAt")]
     pub create_at: Option<i64>,
 }
@@ -131,10 +134,47 @@ pub struct TextContent {
     pub content: String,
 }
 
+/// Payload of `content` for non-text msgtypes (picture / audio / richText).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MediaContent {
+    #[serde(default, rename = "downloadCode")]
+    pub download_code: String,
+    /// Voice-to-text result, set for `audio` messages.
+    #[serde(default)]
+    pub recognition: Option<String>,
+    /// Set for `richText` messages: a mix of text and picture segments.
+    #[serde(default, rename = "richText")]
+    pub rich_text: Option<Vec<RichTextSegment>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RichTextSegment {
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default, rename = "downloadCode")]
+    pub download_code: Option<String>,
+}
+
 impl BotCallback {
     pub fn is_group(&self) -> bool {
         self.conversation_type == "2"
     }
+}
+
+// ─── robot message file download ──────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct MessageFileDownloadReq {
+    #[serde(rename = "downloadCode")]
+    pub download_code: String,
+    #[serde(rename = "robotCode")]
+    pub robot_code: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MessageFileDownloadResp {
+    #[serde(rename = "downloadUrl")]
+    pub download_url: String,
 }
 
 // ─── access token ─────────────────────────────────────────────
@@ -330,6 +370,80 @@ mod tests {
         assert!(!cb.is_group());
         assert_eq!(cb.text.unwrap().content, "你好");
         assert!(cb.session_webhook.starts_with("https://"));
+    }
+
+    #[test]
+    fn deserialize_picture_callback() {
+        let raw = r#"{
+            "msgId": "msg-2",
+            "senderStaffId": "u1",
+            "conversationType": "1",
+            "conversationId": "cid",
+            "sessionWebhook": "https://oapi.dingtalk.com/robot/sendBySession?session=xxx",
+            "msgtype": "picture",
+            "content": { "downloadCode": "dl-code-1" }
+        }"#;
+        let cb: BotCallback = serde_json::from_str(raw).unwrap();
+        assert_eq!(cb.msgtype, "picture");
+        assert_eq!(cb.content.unwrap().download_code, "dl-code-1");
+    }
+
+    #[test]
+    fn deserialize_audio_callback() {
+        let raw = r#"{
+            "msgId": "msg-3",
+            "senderStaffId": "u1",
+            "conversationType": "1",
+            "conversationId": "cid",
+            "sessionWebhook": "https://oapi.dingtalk.com/robot/sendBySession?session=xxx",
+            "msgtype": "audio",
+            "content": { "downloadCode": "dl-code-2", "recognition": "你好世界" }
+        }"#;
+        let cb: BotCallback = serde_json::from_str(raw).unwrap();
+        let content = cb.content.unwrap();
+        assert_eq!(content.download_code, "dl-code-2");
+        assert_eq!(content.recognition.unwrap(), "你好世界");
+    }
+
+    #[test]
+    fn deserialize_rich_text_callback() {
+        let raw = r#"{
+            "msgId": "msg-4",
+            "senderStaffId": "u1",
+            "conversationType": "1",
+            "conversationId": "cid",
+            "sessionWebhook": "https://oapi.dingtalk.com/robot/sendBySession?session=xxx",
+            "msgtype": "richText",
+            "content": {
+                "richText": [
+                    { "text": "look at this " },
+                    { "type": "picture", "downloadCode": "dl-code-3" }
+                ]
+            }
+        }"#;
+        let cb: BotCallback = serde_json::from_str(raw).unwrap();
+        let segments = cb.content.unwrap().rich_text.unwrap();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].text.as_deref(), Some("look at this "));
+        assert_eq!(segments[1].download_code.as_deref(), Some("dl-code-3"));
+    }
+
+    #[test]
+    fn serialize_message_file_download_req() {
+        let req = MessageFileDownloadReq {
+            download_code: "dl-code-1".into(),
+            robot_code: "robot-1".into(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"downloadCode\":\"dl-code-1\""));
+        assert!(json.contains("\"robotCode\":\"robot-1\""));
+    }
+
+    #[test]
+    fn deserialize_message_file_download_resp() {
+        let json = r#"{"downloadUrl": "https://example.com/file.bin"}"#;
+        let resp: MessageFileDownloadResp = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.download_url, "https://example.com/file.bin");
     }
 
     #[test]

@@ -13,6 +13,7 @@
 rust_i18n::i18n!("../core/locales", fallback = "zh-CN");
 
 pub mod error;
+pub mod media;
 pub mod poll;
 pub mod send;
 pub mod types;

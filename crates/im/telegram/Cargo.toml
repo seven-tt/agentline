@@ -24,3 +24,5 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 telegramify-markdown = { workspace = true }
+ulid = "1.1"
+dirs = "5"
