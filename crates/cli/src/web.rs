@@ -632,32 +632,50 @@ struct CodexCfgOut {
 
 async fn api_agents(State(w): State<Web>) -> axum::Json<AgentsOut> {
     let cfg = reload_cfg(&w);
-    let list: Vec<AgentItem> = w
+
+    // detect()/auth_status()/read_credential() each shell out (PATH lookup +
+    // `--version`/login-state subprocess) — run every plugin's checks on a
+    // blocking thread, concurrently, instead of one after another on this task.
+    let tasks: Vec<_> = w
         .plugins
         .iter()
         .map(|p| {
-            let (installed, version) = p.detect();
-            let status = if !installed {
-                "not_installed"
-            } else if p.auth_status() == agentline_bridge::AuthStatus::Ready {
-                "ready"
-            } else {
-                "needs_login"
-            };
-            AgentItem {
-                id: p.id().to_string(),
-                installed,
-                version,
-                status: status.to_string(),
-            }
+            let p = p.clone();
+            tokio::task::spawn_blocking(move || {
+                let (installed, version) = p.detect();
+                let status = if !installed {
+                    "not_installed"
+                } else if p.auth_status() == agentline_bridge::AuthStatus::Ready {
+                    "ready"
+                } else {
+                    "needs_login"
+                };
+                (
+                    p.id().to_string(),
+                    installed,
+                    version,
+                    status.to_string(),
+                    p.read_credential(),
+                )
+            })
         })
         .collect();
 
-    let credentials: HashMap<String, CredentialInfo> = w
-        .plugins
-        .iter()
-        .map(|p| (p.id().to_string(), p.read_credential()))
-        .collect();
+    let mut list = Vec::with_capacity(tasks.len());
+    let mut credentials: HashMap<String, CredentialInfo> = HashMap::with_capacity(tasks.len());
+    for (id, installed, version, status, credential) in futures::future::join_all(tasks)
+        .await
+        .into_iter()
+        .map(|r| r.expect("agent status check panicked"))
+    {
+        credentials.insert(id.clone(), credential);
+        list.push(AgentItem {
+            id,
+            installed,
+            version,
+            status,
+        });
+    }
 
     axum::Json(AgentsOut {
         backend: cfg.agent.backend.clone(),

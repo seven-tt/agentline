@@ -423,6 +423,11 @@ async fn bridge_main(
                                 .await
                                 {
                                     Ok(Ok(_)) => {}
+                                    Ok(Err(e)) if e.code == acp::ErrorCode::MethodNotFound => {
+                                        tracing::info!(
+                                            "agent does not support session/close, skipping"
+                                        );
+                                    }
                                     Ok(Err(e)) => {
                                         tracing::warn!(error=%e, "ACP session/close failed");
                                     }
