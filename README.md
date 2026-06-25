@@ -249,7 +249,7 @@ cargo build --release --bin agentline-tray   # System tray
 ## Community
 
 <p align="center">
-  <img src="docs/group_qq.jpg" width="280" alt="QQ Group QR Code">
+  <img src="docs/group_qq.png" width="280" alt="QQ Group QR Code">
   &nbsp;&nbsp;&nbsp;&nbsp;
   <img src="docs/group_telegram.jpg" width="280" alt="Telegram Group QR Code">
 </p>
