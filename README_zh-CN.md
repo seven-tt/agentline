@@ -249,7 +249,7 @@ cargo build --release --bin agentline-tray   # 系统托盘
 ## 社区
 
 <p align="center">
-  <img src="docs/group_qq.jpg" width="280" alt="QQ 群二维码">
+  <img src="docs/group_qq.png" width="280" alt="QQ 群二维码">
   &nbsp;&nbsp;&nbsp;&nbsp;
   <img src="docs/group_telegram.jpg" width="280" alt="Telegram 群二维码">
 </p>
