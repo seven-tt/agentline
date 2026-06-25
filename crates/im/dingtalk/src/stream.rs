@@ -103,6 +103,7 @@ async fn run_once(
     let (ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .map_err(|e| Error::ws(format!("connect {url}: {e}")))?;
+    tracing::info!(robot_code = %cfg.open.client_id, "dingtalk: stream connected");
 
     let (mut write, mut read) = ws.split();
     let mut idle = tokio::time::interval(KEEPALIVE_IDLE);
@@ -196,9 +197,11 @@ async fn handle_callback(
     let cb: BotCallback =
         serde_json::from_str(data).map_err(|e| Error::Parse(format!("bot callback: {e}")))?;
 
+    tracing::info!(user_id = %cb.sender_staff_id, "dingtalk: message from user");
+
     if !cfg.allowed_users.is_empty() && !cfg.allowed_users.iter().any(|u| u == &cb.sender_staff_id)
     {
-        tracing::debug!(user=%cb.sender_staff_id, "dingtalk: not in allow-list");
+        tracing::debug!(user_id = %cb.sender_staff_id, "dingtalk: not in allow-list");
         return Ok(());
     }
 

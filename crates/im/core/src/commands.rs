@@ -3,6 +3,11 @@ use std::path::PathBuf;
 
 /// Parse a text message into a Command. Convenience helper for text-based
 /// InputSources (IM platforms). Non-text sources produce Commands directly.
+///
+/// `/` is agentline's own command prefix (`/new`, `/cd`, ...). An
+/// unrecognized `/word` is assumed to be meant for the underlying coding
+/// agent's own slash commands (`/compact`, `/init`, ...), so it's forwarded
+/// as-is instead of being rejected.
 pub fn parse_text(text: &str) -> Command {
     let trimmed = text.trim();
 
@@ -32,8 +37,8 @@ pub fn parse_text(text: &str) -> Command {
             "sessions" | "session" | "ls" => Command::Sessions,
             "yolo" => Command::Yolo,
             "safe" => Command::Safe,
-            "help" | "?" => Command::Help,
-            _ => Command::Help,
+            "help" | "?" | "" => Command::Help,
+            _ => Command::Plain(trimmed.to_string()),
         };
     }
 
@@ -74,6 +79,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bare_slash_shows_help() {
+        assert_eq!(parse_text("/"), Command::Help);
+        assert_eq!(parse_text("  /  "), Command::Help);
+    }
+
+    #[test]
     fn slash_commands() {
         assert_eq!(parse_text("/help"), Command::Help);
         assert_eq!(parse_text("/?"), Command::Help);
@@ -97,11 +108,17 @@ mod tests {
     }
 
     #[test]
-    fn unknown_slash_returns_help() {
-        assert_eq!(parse_text("/compact"), Command::Help);
-        assert_eq!(parse_text("/init"), Command::Help);
-        assert_eq!(parse_text("/clear"), Command::Help);
-        assert_eq!(parse_text("/xyz foo bar"), Command::Help);
+    fn unknown_slash_forwarded_as_plain() {
+        assert_eq!(
+            parse_text("/compact"),
+            Command::Plain("/compact".to_string())
+        );
+        assert_eq!(parse_text("/init"), Command::Plain("/init".to_string()));
+        assert_eq!(parse_text("/clear"), Command::Plain("/clear".to_string()));
+        assert_eq!(
+            parse_text("/xyz foo bar"),
+            Command::Plain("/xyz foo bar".to_string())
+        );
     }
 
     #[test]

@@ -16,7 +16,9 @@ pub fn spawn_poll(
     buffer: usize,
 ) -> (mpsc::Receiver<SourceMessage>, tokio::task::JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(buffer);
+    let bot_id = token.split(':').next().unwrap_or_default().to_string();
     let handle = tokio::spawn(async move {
+        tracing::info!(bot_id = %bot_id, "telegram: polling started");
         let mut offset: Option<i64> = None;
         loop {
             match poll_once(&http, &api_base, &token, offset).await {
@@ -138,8 +140,9 @@ async fn process_update(
     };
 
     let user_id_str = user.id.to_string();
+    tracing::info!(user_id = %user_id_str, "telegram: message from user");
     if !allowed_users.is_empty() && !allowed_users.contains(&user_id_str) {
-        tracing::debug!(user_id=%user.id, "telegram: user not in allowed_users, ignoring");
+        tracing::debug!(user_id = %user_id_str, "telegram: user not in allowed_users, ignoring");
         return Some(new_offset);
     }
 

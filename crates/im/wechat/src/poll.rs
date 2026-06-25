@@ -72,6 +72,19 @@ async fn run_loop(
     agent_done: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
     tx: mpsc::Sender<SourceMessage>,
 ) {
+    // No identity endpoint exists in the iLink bot API; the bot_token itself
+    // is the only handle we have, so log a masked suffix to tell accounts apart.
+    let bot_token_tail = http
+        .token()
+        .await
+        .map(|t| {
+            let chars: Vec<char> = t.chars().collect();
+            let start = chars.len().saturating_sub(6);
+            chars[start..].iter().collect::<String>()
+        })
+        .unwrap_or_default();
+    tracing::info!(bot_token_tail, "wechat: polling started");
+
     let mut backoff_secs = MIN_BACKOFF_SECS;
     loop {
         let buf = cursor.read().await.clone();
@@ -166,7 +179,7 @@ async fn run_loop(
                         // be forwarded to the agent as a new prompt (it would spawn
                         // another turn and pile more output onto the backlog).
                         if is_continue && was_blocked {
-                            tracing::info!(user=%msg.peer.user_id, "继续 swallowed as token top-up (not forwarded to agent)");
+                            tracing::info!(user_id = %msg.peer.user_id, "继续 swallowed as token top-up (not forwarded to agent)");
                             continue;
                         }
                         agent_done.lock().await.remove(&msg.peer.user_id);
@@ -214,8 +227,9 @@ fn convert(raw: &WeixinMessage, allowed: &[String]) -> Option<InboundMessage> {
         // Skip partial frames; only route complete messages.
         return None;
     }
+    tracing::info!(user_id = %raw.from_user_id, "wechat: message from user");
     if !allowed.is_empty() && !allowed.iter().any(|u| u == &raw.from_user_id) {
-        tracing::debug!(from = %raw.from_user_id, "user not in allow-list, dropping");
+        tracing::debug!(user_id = %raw.from_user_id, "wechat: user not in allow-list, dropping");
         return None;
     }
 

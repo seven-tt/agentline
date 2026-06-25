@@ -161,7 +161,7 @@ pub async fn send_typing(http: &HttpClient, to: &PeerRef, status: i32) -> Result
         }
     };
     let Some(ticket) = cfg.typing_ticket else {
-        tracing::debug!(user=%to.user_id, "getconfig returned no typing_ticket");
+        tracing::debug!(user_id = %to.user_id, "getconfig returned no typing_ticket");
         return Ok(());
     };
     let typing_req = SendTypingReq {

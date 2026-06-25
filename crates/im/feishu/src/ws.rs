@@ -456,6 +456,7 @@ async fn run_once(
     let (ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .map_err(|e| Error::ws(format!("connect: {e}")))?;
+    tracing::info!(app_id = %cfg.app_id, "feishu: ws connected");
 
     let (mut write, mut read) = ws.split();
     let mut ping_interval_secs = client_cfg.ping_interval;
@@ -627,12 +628,13 @@ async fn handle_event(
     let sender_id = sender
         .sender_id
         .ok_or_else(|| Error::Parse("missing sender_id".into()))?;
+    tracing::info!(user_id = %sender_id.open_id, "feishu: message from user");
     let msg = event
         .message
         .ok_or_else(|| Error::Parse("missing message".into()))?;
 
     if !cfg.allowed_users.is_empty() && !cfg.allowed_users.contains(&sender_id.open_id) {
-        tracing::debug!(open_id=%sender_id.open_id, "feishu: user not in allowed_users");
+        tracing::debug!(user_id = %sender_id.open_id, "feishu: user not in allowed_users");
         return Ok(());
     }
 
@@ -742,7 +744,7 @@ async fn handle_card_action(
     };
 
     if !cfg.allowed_users.is_empty() && !cfg.allowed_users.contains(&operator.open_id) {
-        tracing::debug!(open_id=%operator.open_id, "feishu: card action user not in allowed_users");
+        tracing::debug!(user_id = %operator.open_id, "feishu: card action user not in allowed_users");
         return Ok(());
     }
 

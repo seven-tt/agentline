@@ -143,7 +143,7 @@ impl SendQueue {
                         // to block until the user tops up with a new message —
                         // the same message is retried on the fresh token.
                         Err(crate::error::Error::Api { ret: -2, .. }) => {
-                            tracing::warn!(user=%user, "ret=-2; token closed, waiting for a new one");
+                            tracing::warn!(user_id = %user, "ret=-2; token closed, waiting for a new one");
                             registry.exhaust(&user, &token);
                         }
                         Err(e) => {
